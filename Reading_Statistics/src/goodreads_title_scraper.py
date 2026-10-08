@@ -78,7 +78,7 @@ def _parse_date_str(s: str) -> str:
     return ""
 
 
-def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False, delay: float = 0.6, max_pages: int = 0) -> List[Tuple[str, str, str]]:
+def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False, delay: float = 1.0, max_pages: int = 0) -> List[Tuple[str, str, str]]:
     """Scrape titles and authors from the user's "read" shelf.
 
     Returns a list of tuples: (title, author, normalized_key)
@@ -88,14 +88,22 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
         raise RuntimeError("Playwright sync API not available. Please install playwright and run `playwright install`.")
 
     with sync_playwright() as p:
+        if headful:
+            print("Headful mode enabled: a browser window should open for Goodreads login.")
+        else:
+            print("Headless mode enabled: no visible browser window will open. Remove --headless to log in interactively.")
         browser = p.chromium.launch(headless=not headful)
         page = browser.new_page()
         review_list_url = "https://www.goodreads.com/review/list?shelf=read"
         page.goto(review_list_url)
         # Give the user instructions and then wait for confirmation. Make sure the user
         # logs in and navigates to their "My Books" list (read shelf) before pressing Enter.
-        print("Please log into Goodreads in the opened browser and confirm you can see your 'My Books' list (read shelf). Press Enter when ready to continue.")
-        input()
+        if headful:
+            try:
+                print("Please log into Goodreads in the opened browser and confirm you can see your 'My Books' list (read shelf). Press Enter when ready to continue.")
+                input()
+            except EOFError:
+                print("No interactive input available; continuing without explicit confirmation.")
 
         # Quick diagnostic: confirm we are on a page that exposes book rows. If not,
         # wait briefly for the expected selector and print helpful debug info.
@@ -153,13 +161,13 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
                     raw_dr = dr_el.inner_text().strip() if dr_el else ""
                     # normalize to YYYY/MM/DD; if month-only like 'Jun 2026' -> use the 1st of month
                     date_started = _parse_date_str(raw_ds)
-                    date_read = _parse_date_str(raw_dr)
+                    date_finished = _parse_date_str(raw_dr)
 
                     key = _normalize_key(title, author)
-                    out.append((title, author, key, date_started, date_read))
+                    out.append((title, author, key, date_started, date_finished))
                     scraped += 1
                     if debug:
-                        print(f"Found: {title} — {author} (key={key}) ds={date_started!r} dr={date_read!r}")
+                        print(f"Found: {title} — {author} (key={key}) ds={date_started!r} dr={date_finished!r}")
                     if limit and scraped >= limit:
                         break
                 except Exception as e:
@@ -191,6 +199,7 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
                 break
             try:
                 next_el.click()
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
                 time.sleep(delay)
             except Exception as e:
                 if debug:
@@ -203,12 +212,12 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
     out_path = Path("data/enriched/read_titles_scrape.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["title", "author", "key", "date_started", "date_read"])
+        writer = csv.DictWriter(fh, fieldnames=["title", "author", "key", "date_started", "date_finished"])
         writer.writeheader()
         for row in out:
             # row is (title, author, key, date_started, date_read) per the scraper
             t, a, k, ds, dr = row
-            writer.writerow({"title": t, "author": a, "key": k, "date_started": ds, "date_read": dr})
+            writer.writerow({"title": t, "author": a, "key": k, "date_started": ds, "date_finished": dr})
 
     return out
 
@@ -217,10 +226,12 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=0, help="Max number of titles to scrape (0 = unlimited)")
-    parser.add_argument("--max-pages", type=int, default=0, help="Max number of pages to visit (0 = unlimited)")
-    parser.add_argument("--headful", action="store_true", help="Run browsers in headful mode (interactive login)")
+    parser.add_argument("--page-limit", "--max-pages", dest="max_pages", type=int, default=0, help="Max number of pages to visit (0 = unlimited)")
+    parser.add_argument("--headful", dest="headful", action="store_true", help="Run browsers in headful mode (interactive login)")
+    parser.add_argument("--headless", dest="headful", action="store_false", help="Run browsers in headless mode")
+    parser.set_defaults(headful=True)
     parser.add_argument("--debug", action="store_true", help="Verbose debug output")
-    parser.add_argument("--delay", type=float, default=0.6, help="Polite delay between page actions")
+    parser.add_argument("--delay", type=float, default=1.0, help="Polite delay between page actions (seconds)")
     args = parser.parse_args()
 
     results = scrape_read_titles(limit=args.limit, headful=args.headful, debug=args.debug, delay=args.delay, max_pages=args.max_pages)

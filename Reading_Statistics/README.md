@@ -39,6 +39,16 @@ The app currently shows a minimal "Hello — Reading Dashboard" page (M1). Subse
 - M1: Completed — repo scaffold, README, and minimal Streamlit app.
 - M2–M5: Planned — see `SPEC_Reading_Dashboard.md` for details.
 
+## Extractor smoke test
+
+Use the Goodreads title scraper with a conservative delay and a short page cap to test the flow without crawling the full shelf:
+
+```bash
+python -m src.goodreads_title_scraper --headless --page-limit 5 --delay 1.0
+```
+
+The default delay is now 1.0s to reduce the chance of Goodreads rate-limiting or page-load crashes during longer runs. Use `--page-limit 5` (or `--max-pages 5`) to validate the extractor on a small subset before running a full extraction.
+
 ## Notes / Next steps
 
 - Implement `src/cleaning.py` and `src/enrichment.py` (M2).

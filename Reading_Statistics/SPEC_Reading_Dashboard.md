@@ -132,22 +132,27 @@ Which books count in the stats?
 ### 4.2 Goodreads Scraper
 
 starting point:
-https://www.goodreads.com/review/list/
-The site shows 20 books (rows) and the following columns:
+https://www.goodreads.com/review/list?shelf=read
+The site shows ~20 books (rows) and the following columns:
 cover, title, author, avg rating, rating, shelves, review, date read, date added
 
 For every row on the review list page:
-- Check that the row's `shelves` contains `read` (or the row's `Exclusive Shelf` equals `read`). Only rows on the `read` shelf count for scraping.
-- Identify the book and determine `book_key` using this order of preference:
-  1. `review id` extracted from the per-row view link `/review/show/<id>` (preferred — present on the review/view page and stable for user-specific data).
-  2. `ISBN13` found in the review row text (if present).
-  3. Normalized `Title + Author` (lowercase, strip punctuation, collapse whitespace) as a deterministic fallback.
+- Open the read shelf explicitly (`?shelf=read`) before scraping.
+- Save the visible `Title` and `Author` for every row encountered on the read shelf, even if the row is not yet matched to the raw CSV.
+- Open the per-row "View" link (`/review/show/<id>`) and parse the "Reading process" block for `Started Reading` / `Finished Reading` dates.
+- Store the result as a pair of dates for that book and keep the raw title/author record in a scraped CSV for later matching.
 
-- Match strategy:
-  - Primary: if the per-row view link contains a review id, use that as `book_key` and map it directly to the raw CSV row when possible.
-  - Secondary: if no review id is available, use `ISBN13` (if present) to match the raw CSV.
-  - Tertiary: match by normalized `Title + Author` (exact normalized match first; then normalized Title-only contains match). Avoid fuzzy string-distance matching to reduce false positives.
-- Open the per-row "View" link (`/review/show/<id>`) when present. The "Reading process" block on that view contains the user's reading session events.
+Scraper output:
+- The extractor writes `data/enriched/read_titles_scrape.csv` with columns:
+  `title,author,date_started,date_finished`
+- It also writes a cache CSV at `data/enriched/read_dates_cache.csv` keyed by normalized `Title + Author`.
+
+Matching algorithm (runs after extraction finishes):
+- Build the canonical matching key for each row as normalized `Title + Author` using the same logic as the extractor: lowercase, strip punctuation, collapse whitespace, trim surrounding quotes.
+- For each scraped book, look up the matching raw CSV row by exact normalized `Title + Author`.
+- If the exact match is missing, fall back to the title-only normalized string only when needed; avoid fuzzy matching.
+- When a match is found, copy the extracted `Date Started` and `Date Finished` to the corresponding raw row and keep the original `Date Added` / `Date Read` values as the fallback when the scraper data is empty.
+- This match happens in the pipeline after the scraper completes; it is not performed inside the browser loop itself.
 
 **Example 1:**
 September 23, 2026 – Started Reading
@@ -175,7 +180,7 @@ Parsing rules and fallbacks:
 
 Page navigation:
 - Each review list page shows ~20 rows. After visiting every row's view page on the current page, click the `next` link and repeat until there is no `next` link.
-- The extractor must visit each row's view page before paginating away to avoid missing per-row `Reading process` content. Honor the polite delay (default `0.6s`) between navigations.
+- The extractor must visit each row's view page before paginating away to avoid missing per-row `Reading process` content. Honor the polite delay (default `1.0s`) between navigations.
 
 
 
