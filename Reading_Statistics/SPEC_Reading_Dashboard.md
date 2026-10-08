@@ -27,7 +27,47 @@ Comments are indicated as `{{ comment }}` and are not subject of the current imp
     * data handling: Pandas
     * Dashboard framework: use Streamlit; must refresh automatically, when e.g. changing filters; must be possible to open in GitHub online
     * charts: define together (matplotlib, plotly, altair)
+  * scraping: Playwright (optional, offline extraction only)
 - Compatability with GitHub
+
+- Use `playwright` Python package and `python -m playwright install` to install browsers.
+- Extraction must be an offline pipeline step (never run from the Streamlit dashboard at runtime). The extractor may run headful for interactive login or headless with stored cookies/session for automated runs.
+- Extractor responsibilities:
+  - Navigate to `https://www.goodreads.com/review/list` (user's My Books list), paginate through pages, and visit per-row `review/show/...` view pages to read the "Reading process" block.
+  - Parse lines with date + action (examples: "September 23, 2026 – Started Reading", "January 9, 2023 – Shelved", "February 11, 2026 – Finished Reading").
+  - Normalize dates to `YYYY/MM/DD`, record sessions as `START,END` and store multiple sessions separated by `;` in a cache CSV (`data/enriched/read_dates_cache.csv`).
+  - Provide a `--headless` toggle, `--limit` to limit number of books to scan, and a `--debug`/`--verbose` mode that prints visited URLs and matched lines for troubleshooting.
+
+Security & etiquette notes:
+- Treat the extractor as a personal automation tool; respect Goodreads' terms of service and use conservative delays (`0.5–1s`) between page navigations.
+- Do not embed credentials in code; use interactive login (headful) or a local cookie/session export that is not committed.
+ 
+Playwright details (offline extractor only):
+- Use `playwright` Python package and `python -m playwright install` to install browsers.
+- Extraction must be an offline pipeline step (never run from the Streamlit dashboard at runtime). The extractor should prefer interactive headful login only and must not persist or commit any login/session cookies.
+- Extractor responsibilities:
+  - Navigate to `https://www.goodreads.com/review/list` (user's My Books list), paginate through pages, and visit per-row `review/show/...` view pages to read the "Reading process" block.
+  - Parse lines with date + action (examples: "September 23, 2026 – Started Reading", "February 11, 2026 – Finished Reading"). Do not treat `Shelved` as a session end marker.
+  - Normalize dates to `YYYY/MM/DD` and record only the most recent reading session (one `START,END` pair) per book in the cache.
+  - Provide CLI options: `--headless`, `--limit N`, `--debug`/`--verbose`, and `--delay SECONDS` (default `0.6`).
+  - Output cache CSV: `data/enriched/read_dates_cache.csv` with columns `book_key,date_started,date_finished` (single most-recent session only).
+  - Default polite delay between page navigations: `0.6s` (configurable via `--delay`).
+  - Debug outputs: `data/enriched/read_dates_debug.log` and per-book snippets in `data/enriched/read_dates_snippets/` when `--debug` is enabled.
+
+Security & etiquette notes:
+- Treat the extractor as a personal automation tool; respect Goodreads' terms of service and use conservative delays between page navigations.
+- Do not persist or commit login/session cookies. The extractor may prompt for interactive login (headful) but must not write session cookies to disk.
+- Use `playwright` Python package and `python -m playwright install` to install browsers.
+- Extraction must be an offline pipeline step (never run from the Streamlit dashboard at runtime). The extractor may run headful for interactive login or headless with stored cookies/session for automated runs.
+- Extractor responsibilities:
+  - Navigate to `https://www.goodreads.com/review/list` (user's My Books list), paginate through pages, and visit per-row `review/show/...` view pages to read the "Reading process" block.
+  - Parse lines with date + action (examples: "September 23, 2026 – Started Reading", "January 9, 2023 – Shelved", "February 11, 2026 – Finished Reading").
+  - Normalize dates to `YYYY/MM/DD`, record sessions as `START,END` and store multiple sessions separated by `;` in a cache CSV (`data/enriched/read_dates_cache.csv`).
+  - Provide a `--headless` toggle, `--limit` to limit number of books to scan, and a `--debug`/`--verbose` mode that prints visited URLs and matched lines for troubleshooting.
+
+Security & etiquette notes:
+- Treat the extractor as a personal automation tool; respect Goodreads' terms of service and use conservative delays (`0.5–1s`) between page navigations.
+- Do not embed credentials in code; use interactive login (headful) or a local cookie/session export that is not committed.
 
 **Constraints:**
 - The dashboard reads only from `data/enriched_goodreads_library_export.csv` and makes **no API calls at runtime**.
@@ -45,14 +85,25 @@ src/
   cleaning.py     # load + clean Goodreads CSV
   enrichment.py   # genre lookup + caching
   genres.py       # genre mapping rules
-  metrics.py      # aggregation functions used by charts
-Reading_Dashboard.py            # dashboard entry point
+  metrics.py      # aggregation function used in charts
+Reading_Dashboard.py      # dashboard entry point
 SPEC_Reading_Dashboard.md
 README.md
 
 ## 4. Data
 
 ### 4.1 Input: Goodreads export
+For every row on the review list page:
+- Check that the row's `shelves` contains `read` (or the row's `Exclusive Shelf` equals `read`). Only rows on the `read` shelf count for scraping.
+- Determine the `book_key` for matching as the normalized `Title + Author` for the row. Normalization rules: lowercase, strip punctuation, collapse whitespace, and trim surrounding quotes.
+
+- Match strategy:
+  - Always use normalized `Title + Author` as the canonical `book_key` for cache and for matching the raw CSV.
+  - Matching order: exact normalized `Title + Author` → exact normalized Title-only → normalized Title-only contains match.
+  - Do not use fuzzy string-distance matching to avoid false positives.
+- Open the per-row "View" link (`/review/show/<id>`) when present to read the "Reading process" block, but do not use the review id as the cache key.
+
+  - Output cache CSV: `data/enriched/read_dates_cache.csv` with columns `book_key,date_started,date_finished` (single most-recent session only). `book_key` MUST be the normalized `Title + Author` string used to match the raw CSV.
 **File:** `data/raw_goodreads_library_export.csv`
 - includes many columumns which can be ommited in the python variable (do not delete in raw file)
 - keep only the following (column | type | cleaning rule):
@@ -71,35 +122,92 @@ README.md
   * Exclusive Shelf | str | nothing
   * My Review | str | strip `"` if present 
 
-Books with missing dates: 
-- set "Date Read" == "Date Added" (whichever one exists determines the date)
-- if both are missing -> set Null and ignore in all algorithms
-
-If "Date Read" < "Date Added"
-- set "Date Read" == "Date Added"
-
 All other fields:
-- if empty: set to null 
+- if empty: set to null
 
 Which books count in the stats?
 - books with 'Exclusive Shelf == "read"'
 
 
+### 4.2 Goodreads Scraper
+
+starting point:
+https://www.goodreads.com/review/list/
+The site shows 20 books (rows) and the following columns:
+cover, title, author, avg rating, rating, shelves, review, date read, date added
+
+For every row on the review list page:
+- Check that the row's `shelves` contains `read` (or the row's `Exclusive Shelf` equals `read`). Only rows on the `read` shelf count for scraping.
+- Identify the book and determine `book_key` using this order of preference:
+  1. `review id` extracted from the per-row view link `/review/show/<id>` (preferred — present on the review/view page and stable for user-specific data).
+  2. `ISBN13` found in the review row text (if present).
+  3. Normalized `Title + Author` (lowercase, strip punctuation, collapse whitespace) as a deterministic fallback.
+
+- Match strategy:
+  - Primary: if the per-row view link contains a review id, use that as `book_key` and map it directly to the raw CSV row when possible.
+  - Secondary: if no review id is available, use `ISBN13` (if present) to match the raw CSV.
+  - Tertiary: match by normalized `Title + Author` (exact normalized match first; then normalized Title-only contains match). Avoid fuzzy string-distance matching to reduce false positives.
+- Open the per-row "View" link (`/review/show/<id>`) when present. The "Reading process" block on that view contains the user's reading session events.
+
+**Example 1:**
+September 23, 2026 – Started Reading
+September 23, 2026 – Shelved
+September 28, 2026 – Finished Reading
+
+**Example 2:**
+January 9, 2023 – Shelved
+January 9, 2023 – Shelved as: to-read
+February 1, 2026 – Started Reading
+February 1, 2026 – Shelved as: weddingbookshelf
+February 1, 2026 – Shelved as: non-fiction
+February 1, 2026 – page 60  21.9%
+February 11, 2026 – Finished Reading
+
+From the "Reading process" block extract:
+- `Started Reading` → `Date Started`
+- `Finished Reading` → `Date Finished`
+
+Parsing rules and fallbacks:
+- Accept the date formats like `MonthName DD, YYYY` or `MonthName D, YYYY` with full month names (e.g. "September 23, 2026" or "Sep 6, 2026").
+- Accept different dash characters (`-`, `–`, `—`) and minor variations in action text (e.g. `Started`, `Started Reading`, `Finished`, `Finished Reading`). Do not treat `Shelved` as a session end marker.
+- If multiple sessions are present, select only the most recent finished session (the session with the latest `Finished` date) and record that single `START,END` pair in the cache and enrichment output.
+- If `Started Reading` or `Finished Reading` cannot be found for a book, the enrichment step must fall back to SPEC rules in 4.3 (Date Added / Date Read fallback).
+
+Page navigation:
+- Each review list page shows ~20 rows. After visiting every row's view page on the current page, click the `next` link and repeat until there is no `next` link.
+- The extractor must visit each row's view page before paginating away to avoid missing per-row `Reading process` content. Honor the polite delay (default `0.6s`) between navigations.
 
 
-### 4.2 Enriched output
+
+### 4.3 Enriched output
 **File:** `data/enriched_goodreads_library_export.csv`
-Additional columns (Column | Type | Description ):
-* Days until finished | int | counting the days between "Date Added" and "Date Read"
-* average pages read per day | float | "Number of Pages"/"Days until finished"
-  - if Number of pages is missing -> set to Null
-  - if "Days until finished" = 0 ('Date Read' == 'Date Added') -> set to Null
+Keep only books with 'Exclusive Shelf == "read"'
+Remove all other books with 'Exclusive Shelf == "to-read"' or 'Exclusive Shelf == "currently-reading"'
 
-### 4.3 Additional stats to calculate
+Additional columns (Column | Type | Description ):
+* Date Started | date yyyy/mm/dd | 
+  - Primarily derived from Goodreads 'Started Reading'. See 4.2 Goodreads Scraper for explanation on how to acquire.
+  - if it cannot be found by Scraper, set to same date as "Date Added"
+
+* Date Finished | date yyyy/mm/dd |
+  - Primarily derived from Goodreads 'Finished Reading'. See 4.2 Goodreads Scraper for explanation on how to acquire.
+  - if it cannot be found by Scraper, set to same date as "Date Read"
+
+
+
+### 4.4 Additional stats to calculate
+Days until finished | int | counting the days between `Date Started` and `Date Finished` (derived columns)
+Average pages read per day | float | `Number of Pages` / `Days until finished`
+  - if Number of pages is missing -> set to Null
+  - if `Days until finished` = 0 -> set to Null
 "pages read on day":
-  * Calculate for every day between min date added (from entire book list) and current date, how many pages were read
-    - algorithm example: iterate through each day, check if there are any books with date_added <= iteration_day AND date_read >= iteration_day, add "average pages read per day" to "pages read on day"
+  * Calculate for every day between min `Date Started` (from entire book list) and current date, how many pages were read
+    - algorithm example: iterate through each day, check if there are any books with `Date Started` <= iteration_day AND `Date Finished` >= iteration_day, add "average pages read per day" to "pages read on day"
   * only use books where "average pages read per day" is not Null
+
+Multiple readings handling:
+  * The enriched CSV stores all detected reading sessions in `read_dates` as described above.
+  * For per-book KPIs and the pages/time allocation algorithm we use the most recent reading session (i.e. the session with the latest END_DATE). This keeps calculations intuitive for re-reads while preserving full history for later analysis. If you prefer another policy (earliest reading, count all readings separately, or split into multiple rows) we can change this later.
   
 
 {{ 
@@ -199,8 +307,46 @@ Show all stats for filtered range
 
 
 ## 8. Milestones
-M1 | Repo setup, create and write README 
+M1 | Repo setup, create and write README
 M2 | Build data cleaning pipeline & enrichment & metrics calculation
-M3 | Dashboard v1: KPIs, Charts 1 & 2; fixed filter to "This Year"; no possiblilty to change filter at this stage
+M3 | Dashboard v1: KPIs, Charts 1 & 2; fixed filter to "This Year"; no possibility to change filter at this stage
 M4 | Dashboard v2: add functional filter as described
-M5 | conceptiualize further functions (genre mapping, pulling date started instead of date added etc.)
+
+M5 | Implement `read_dates` extraction (Playwright)
+  - Create a Playwright-based extractor that opens Goodreads edit/review pages, supports interactive login (headful), parses session Day/Month/Year fields, normalizes sessions to `yyyy/mm/dd`, and writes a mapping CSV (book identifier → `read_dates`).
+
+  Implementation details for M5:
+  - CLI entrypoints:
+    * `--use-read-dates` (deprecated in the current codebase) — when present the extractor runs before enrichment.
+    * `--limit N` — stop after collecting N books.
+    * `--headless` — run in headless mode (optional; headful recommended for interactive login).
+    * `--debug` / `--verbose` — print visited URLs, matched lines, and parsing decisions for troubleshooting.
+  - Output format:
+    * Cache CSV: `data/enriched/read_dates_cache.csv` with columns `book_key,read_dates` where `read_dates` is `START,END[;START,END]*`.
+    * Extractor must be resilient to missing per-row `review/show` links; prefer visiting `review/show/<id>` when present.
+  - Parsing policy:
+    * Pair `Started` → `Finished` events in order of appearance; if a `Finished` appears without a preceding `Started`, skip that pair.
+    * Treat `Shelved`/`Shelved as:` as metadata and only consider it if it appears in the absence of `Finished` as an optional end marker (configurable fallback).
+    * Prefer the most recent finished session when merging into enrichment.
+
+M6 | Integrate extractor into pipeline and enrichment
+  - Add an optional extractor step in `run_pipeline.py` that runs before enrichment and merges extracted `read_dates` into the cleaned DataFrame.
+  - Update `src/enrichment.py` to prefer `read_dates` when present and apply the SPEC fallbacks when `read_dates` are missing.
+
+M7 | CLI flags, caching and Streamlit toggle
+  - Add a `--use-read-dates` flag to `run_pipeline.py` and a Streamlit sidebar toggle to enable/skip extraction at runtime.
+  - Implement simple caching for extracted results (CSV cache in `data/enriched/`) and a `--refresh` option to re-run extraction.
+
+{{
+M8 | Tests, validation and sample data
+  - Add unit tests for the `read_dates` parser, enrichment fallbacks, and pages/time allocation algorithm.
+  - Include a small sample `data/sample_raw_goodreads_export.csv` with representative cases (multiple sessions, single-date fallbacks, missing dates).
+
+M9 | Documentation & contributor notes
+  - Update `README.md` and `SPEC_Reading_Dashboard.md` with Playwright installation steps, how to run the extractor (headful login flow), expected runtime considerations, and troubleshooting tips.
+
+M10 | Performance & UX improvements (optional)
+  - Optimize extraction speed by reusing a single Playwright context/tab, add optional headless mode, and surface progress in the Streamlit UI when extraction runs.
+  - Add rate-limiting and polite delays if the extractor causes site load issues.
+
+}}

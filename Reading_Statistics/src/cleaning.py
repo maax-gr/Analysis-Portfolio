@@ -12,6 +12,7 @@ import numpy as np
 
 
 RAW_COLUMNS = [
+    "Book Id",
     "Title",
     "Author",
     "Author l-f",
