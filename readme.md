@@ -1,6 +1,6 @@
 # Analysis Portfolio
 
-This repository contains data analyses and supporting code.
+This repository contains data analyses I have done (in large parts during my PhD).
 
 ## Aptamer correlation analysis
 
