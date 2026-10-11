@@ -5,8 +5,11 @@ Implements Milestone M3: fixed "This Year" filter, KPI cards, and two charts
 produced by the pipeline: `data/enriched_goodreads_library_export.csv`.
 """
 from pathlib import Path
+import os
+import subprocess
 import sys
 import time
+from typing import Optional
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -22,6 +25,109 @@ from enrichment import compute_enrichment
 
 ENRICHED_CSV = ROOT / "data" / "enriched_goodreads_library_export.csv"
 RAW_CSV = ROOT / "data" / "raw_goodreads_library_export.csv"
+CACHE_CSV = ROOT / "data" / "enriched" / "read_dates_cache.csv"
+
+
+def is_process_running(pid: Optional[int]) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def clear_goodreads_extractor_state() -> None:
+    """Reset extractor state after scraper completion and merge."""
+    st.session_state.pop("goodreads_extractor_pid", None)
+    st.session_state.pop("goodreads_extractor_started_at", None)
+    st.session_state.pop("goodreads_extractor_status", None)
+
+
+def run_pipeline_with_scraped_dates() -> None:
+    """Merge the latest scraper output (read_dates_cache.csv) into the enriched CSV."""
+    if not RAW_CSV.exists():
+        st.warning(f"Missing raw data at {RAW_CSV}.")
+        return
+    if not CACHE_CSV.exists():
+        st.warning("Goodreads extraction finished, but no cache file was produced yet.")
+        return
+
+    cmd = [
+        sys.executable,
+        str(ROOT / "run_pipeline.py"),
+        str(RAW_CSV),
+        str(ENRICHED_CSV),
+        "--use-read-dates",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        st.error("The pipeline refresh failed after the extraction finished.")
+        if result.stderr:
+            st.code(result.stderr.strip())
+        return
+
+    st.session_state["goodreads_last_run"] = time.time()
+    st.success("Goodreads reading dates were merged into the dashboard data.")
+
+
+def coerce_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize date-like columns to pandas datetime objects.
+
+    The pipeline writes CSVs with date strings, so when the dashboard reads them
+    back it must coerce the relevant columns before performing month filters or
+    date arithmetic.
+    """
+    for col in ["Date Read", "Date Added", "Date Started", "Date Finished"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    return df
+
+
+def rebuild_enriched_from_raw_data() -> None:
+    """Run the actual raw-to-enriched pipeline, then return the resulting DataFrame."""
+    if not RAW_CSV.exists():
+        st.warning(f"Missing raw data at {RAW_CSV}.")
+        return None
+
+    cmd = [
+        sys.executable,
+        str(ROOT / "run_pipeline.py"),
+        str(RAW_CSV),
+        str(ENRICHED_CSV),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        st.error("The raw-data rebuild failed.")
+        if result.stderr:
+            st.code(result.stderr.strip())
+        return None
+
+    if ENRICHED_CSV.exists():
+        df = pd.read_csv(ENRICHED_CSV, keep_default_na=True)
+        return coerce_datetime_columns(df)
+    return None
+
+
+def launch_goodreads_extractor() -> None:
+    """Start the Goodreads scraper in a detached background process.
+
+    The dashboard remains usable while the extraction runs in the background.
+    We keep a PID in session state as a failsafe against duplicate clicks.
+    """
+    running_pid = st.session_state.get("goodreads_extractor_pid")
+    if running_pid and is_process_running(running_pid):
+        st.info("Goodreads extraction is already running in the background.")
+        return
+
+    script = ROOT / "src" / "goodreads_title_scraper.py"
+    cmd = [sys.executable, str(script)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    st.session_state["goodreads_extractor_pid"] = proc.pid
+    st.session_state["goodreads_extractor_started_at"] = time.time()
+    st.session_state["goodreads_extractor_status"] = "running"
+    st.toast("Goodreads extraction started in the background.")
 
 
 def ensure_enriched(raw: Path, enriched: Path, force: bool = False) -> pd.DataFrame:
@@ -66,13 +172,15 @@ def ensure_enriched(raw: Path, enriched: Path, force: bool = False) -> pd.DataFr
                 st.warning("Invalid Number of Pages in these rows:\n" + "\n".join(report["invalid_pages_rows"]))
             df_enriched = compute_enrichment(df_clean)
             df_enriched.to_csv(enriched, index=False)
-            return df_enriched
+            return coerce_datetime_columns(df_enriched)
         # otherwise load existing enriched
-        return pd.read_csv(enriched, parse_dates=["Date Added", "Date Read"], keep_default_na=True)
+        df = pd.read_csv(enriched, keep_default_na=True)
+        return coerce_datetime_columns(df)
 
     # If enriched exists but raw missing -> load enriched
     if enriched.exists() and (not raw.exists()):
-        return pd.read_csv(enriched, parse_dates=["Date Added", "Date Read"], keep_default_na=True)
+        df = pd.read_csv(enriched, keep_default_na=True)
+        return coerce_datetime_columns(df)
 
     # neither exists
     return pd.DataFrame()
@@ -115,18 +223,63 @@ def compute_kpis(df: pd.DataFrame) -> dict:
 
 def main() -> None:
     st.set_page_config(page_title="Reading Dashboard", layout="wide")
-    # Slightly smaller title to keep the UI compact
     st.markdown("### Reading Dashboard")
+
+    running_pid = st.session_state.get("goodreads_extractor_pid")
+    extractor_status = st.session_state.get("goodreads_extractor_status", "idle")
+
+    if running_pid:
+        if is_process_running(running_pid):
+            extractor_status = "running"
+            with st.sidebar:
+                st.status("🔄 Goodreads extraction running", state="running")
+                st.write("Scraping titles and dates from Goodreads.")
+            with st.spinner("Extracting Goodreads read dates..."):
+                time.sleep(2)
+            st.rerun()
+        else:
+            extractor_status = "processing"
+            with st.sidebar:
+                st.status("🔄 Matching scraped dates and recalculating dashboard data", state="running")
+                st.write("The scraper has finished; updating the enriched CSV and metrics.")
+            with st.spinner("Matching Goodreads dates to the raw export and recalculating metrics..."):
+                # The scraper itself triggers the merge and recompute step after it writes
+                # the cache file, but this extra safeguard makes the dashboard wait for the
+                # update to settle before returning to interactive mode.
+                if CACHE_CSV.exists():
+                    run_pipeline_with_scraped_dates()
+            clear_goodreads_extractor_state()
+            st.rerun()
 
     # Sidebar controls: pipeline and filters
     st.sidebar.header("Data / Pipeline")
-    force_run = st.sidebar.button("Re-run cleaning & enrichment")
+    force_run = st.sidebar.button("Re-run from raw data")
 
-    # If the user triggered force_run, call ensure_enriched with force=True
+    extractor_is_running = bool(running_pid and is_process_running(running_pid))
+    if extractor_is_running:
+        st.sidebar.markdown("🔄 Goodreads extraction running in background")
+    else:
+        if extractor_status != "processing":
+            st.session_state.pop("goodreads_extractor_pid", None)
+            st.session_state.pop("goodreads_extractor_started_at", None)
+            st.session_state.pop("goodreads_extractor_status", None)
+
+    extract_read_dates = st.sidebar.button(
+        "Extract reading dates from Goodreads",
+        key="goodreads_scraper_button",
+        disabled=extractor_is_running or extractor_status == "processing",
+    )
+    if extract_read_dates:
+        launch_goodreads_extractor()
+
+    # If the user triggered force_run, rebuild the enriched dataset from the raw CSV.
     if force_run:
-        with st.spinner("Running cleaning & enrichment pipeline..."):
-            df = ensure_enriched(RAW_CSV, ENRICHED_CSV, force=True)
-            st.success("Pipeline finished.")
+        with st.spinner("Rebuilding enriched data from raw Goodreads export..."):
+            df = rebuild_enriched_from_raw_data()
+            if df is None:
+                df = ensure_enriched(RAW_CSV, ENRICHED_CSV, force=False)
+            else:
+                st.success("Raw-data rebuild finished.")
     else:
         df = ensure_enriched(RAW_CSV, ENRICHED_CSV, force=False)
 

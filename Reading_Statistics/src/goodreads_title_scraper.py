@@ -1,9 +1,9 @@
 """Simple Playwright-based scraper to collect titles/authors from the user's 'read' shelf.
 
-This is a diagnostic/test extractor: it does NOT compare to any CSV and simply
-visits the Goodreads review list (shelf=read) pages and collects the title and
-author from each row. It writes results to data/enriched/read_titles_scrape.csv
-and returns the list of tuples.
+This is the working extraction path: it visits the Goodreads review list
+(shelf=read), collects the title and author from each row, records visible
+reading dates where present, and writes the result to
+`data/enriched/read_dates_cache.csv`.
 
 Usage example (from repo root):
     python3 -m src.goodreads_title_scraper --limit 25 --max-pages 5
@@ -15,6 +15,8 @@ Note: Playwright must be installed and browsers set up:
 from typing import List, Tuple, Optional
 import time
 import csv
+import subprocess
+import sys
 from pathlib import Path
 import re
 from datetime import datetime
@@ -88,34 +90,26 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
         raise RuntimeError("Playwright sync API not available. Please install playwright and run `playwright install`.")
 
     with sync_playwright() as p:
-        if headful:
-            print("Headful mode enabled: a browser window should open for Goodreads login.")
-        else:
-            print("Headless mode enabled: no visible browser window will open. Remove --headless to log in interactively.")
-        browser = p.chromium.launch(headless=not headful)
+        browser = p.chromium.launch(headless=False)
         page = browser.new_page()
         review_list_url = "https://www.goodreads.com/review/list?shelf=read"
         page.goto(review_list_url)
-        # Give the user instructions and then wait for confirmation. Make sure the user
-        # logs in and navigates to their "My Books" list (read shelf) before pressing Enter.
-        if headful:
-            try:
-                print("Please log into Goodreads in the opened browser and confirm you can see your 'My Books' list (read shelf). Press Enter when ready to continue.")
-                input()
-            except EOFError:
-                print("No interactive input available; continuing without explicit confirmation.")
+        print("Opening Goodreads read shelf. If prompted, log in and then the scraper will continue automatically.")
 
-        # Quick diagnostic: confirm we are on a page that exposes book rows. If not,
-        # wait briefly for the expected selector and print helpful debug info.
+        # The scraper should continue without blocking for terminal input. If the
+        # list is not ready immediately, give the page a moment to render and keep
+        # going; the user can still log in in the visible browser window.
         try:
-            # wait up to 10s for at least one book link to appear
+            # wait up to 10s for at least one book link to appear; if the page is
+            # still loading because the user is signing in, keep waiting instead of
+            # blocking for Enter input.
             page.wait_for_selector("a.bookTitle", timeout=10000)
         except Exception:
-            # nothing matched; print the current URL and a small snippet of the page
-            print("DEBUG: No book links found after login. Current page:", page.url)
-            snippet = page.content()[:2000]
-            print("--- Start of page snippet ---\n" + snippet + "\n--- End of page snippet ---")
-            # continue anyway so the caller sees the empty result; better to exit but keep consistent
+            if debug:
+                print("DEBUG: No book links found yet. Current page:", page.url)
+                snippet = page.content()[:2000]
+                print("--- Start of page snippet ---\n" + snippet + "\n--- End of page snippet ---")
+            time.sleep(2)
 
         scraped = 0
         page_num = 0
@@ -209,15 +203,28 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
         browser.close()
 
     # write results to CSV for inspection
-    out_path = Path("data/enriched/read_titles_scrape.csv")
+    out_path = Path("data/enriched/read_dates_cache.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf8") as fh:
         writer = csv.DictWriter(fh, fieldnames=["title", "author", "key", "date_started", "date_finished"])
         writer.writeheader()
         for row in out:
-            # row is (title, author, key, date_started, date_read) per the scraper
             t, a, k, ds, dr = row
             writer.writerow({"title": t, "author": a, "key": k, "date_started": ds, "date_finished": dr})
+
+    # Trigger the match + recompute step immediately after writing the cache so the
+    # dashboard updates from the scraped data without requiring a second manual click.
+    project_root = Path(__file__).resolve().parents[1]
+    raw_csv = project_root / "data" / "raw_goodreads_library_export.csv"
+    enriched_csv = project_root / "data" / "enriched_goodreads_library_export.csv"
+    pipeline = project_root / "run_pipeline.py"
+    if raw_csv.exists() and pipeline.exists():
+        subprocess.run(
+            [sys.executable, str(pipeline), str(raw_csv), str(enriched_csv), "--use-read-dates"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     return out
 
@@ -227,12 +234,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=0, help="Max number of titles to scrape (0 = unlimited)")
     parser.add_argument("--page-limit", "--max-pages", dest="max_pages", type=int, default=0, help="Max number of pages to visit (0 = unlimited)")
-    parser.add_argument("--headful", dest="headful", action="store_true", help="Run browsers in headful mode (interactive login)")
-    parser.add_argument("--headless", dest="headful", action="store_false", help="Run browsers in headless mode")
+    parser.add_argument("--headful", action="store_true", help="Open a visible browser window for Goodreads login (default)")
     parser.set_defaults(headful=True)
     parser.add_argument("--debug", action="store_true", help="Verbose debug output")
     parser.add_argument("--delay", type=float, default=1.0, help="Polite delay between page actions (seconds)")
     args = parser.parse_args()
 
     results = scrape_read_titles(limit=args.limit, headful=args.headful, debug=args.debug, delay=args.delay, max_pages=args.max_pages)
-    print(f"Scraped {len(results)} titles. Wrote data/enriched/read_titles_scrape.csv")
+    print(f"Scraped {len(results)} titles. Wrote data/enriched/read_dates_cache.csv")

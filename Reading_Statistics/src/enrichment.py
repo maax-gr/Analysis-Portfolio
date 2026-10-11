@@ -72,21 +72,31 @@ def compute_enrichment(df: pd.DataFrame) -> pd.DataFrame:
     """Compute derived columns and return enriched DataFrame.
 
     Adds:
-    - `Days until finished` (int) = days between Date Added and Date Read
+    - `Date Started` and `Date Finished` columns whenever they are missing
+    - `Days until finished` (int) = days between Date Started and Date Finished
     - `average pages read per day` (float) = Number of Pages / Days until finished
 
     Rules implemented per spec:
     - if Number of Pages is null -> average pages/day = NaN
     - if Days until finished == 0 -> average pages/day = NaN
+    - if scraped dates are missing, fall back to Date Added / Date Read
     """
     df = df.copy()
 
-    if "Date Started" in df.columns and "Date Finished" in df.columns:
-        start_col = "Date Started"
-        end_col = "Date Finished"
-    else:
-        start_col = "Date Added"
-        end_col = "Date Read"
+    for col in ["Date Started", "Date Finished"]:
+        if col not in df.columns:
+            df[col] = pd.NaT
+
+    if "Date Added" in df.columns:
+        df["Date Started"] = pd.to_datetime(df["Date Started"], errors="coerce")
+        df["Date Started"] = df["Date Started"].combine_first(pd.to_datetime(df["Date Added"], errors="coerce"))
+
+    if "Date Read" in df.columns:
+        df["Date Finished"] = pd.to_datetime(df["Date Finished"], errors="coerce")
+        df["Date Finished"] = df["Date Finished"].combine_first(pd.to_datetime(df["Date Read"], errors="coerce"))
+
+    start_col = "Date Started"
+    end_col = "Date Finished"
 
     df["Days until finished"] = (df[end_col] - df[start_col]).dt.days
     df.loc[df["Days until finished"].isna(), "Days until finished"] = pd.NA

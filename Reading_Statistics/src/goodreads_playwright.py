@@ -2,8 +2,7 @@
 
 The extractor intentionally scrapes every visible book on the user's read shelf,
 records the title and author, opens each book's `/review/show/...` page, parses
-"Reading process", and stores the result in `data/enriched/read_dates_cache.csv`
-and `data/enriched/read_titles_scrape.csv`.
+"Reading process", and stores the result in `data/enriched/read_dates_cache.csv`.
 """
 from typing import Dict, Iterable, Optional
 import csv
@@ -140,17 +139,13 @@ def extract_read_dates(
         page = browser.new_page()
         review_list_url = "https://www.goodreads.com/review/list?shelf=read"
         page.goto(review_list_url)
-        print("Opening Goodreads read shelf. If in headful mode, log in if needed.")
+        print("Opening Goodreads read shelf. If prompted, log in and then the scraper will continue automatically.")
         try:
             page.wait_for_selector("td.field.title a, a.bookTitle", timeout=120000)
         except Exception:
-            try:
-                print(
-                    "Could not detect read-shelf rows automatically. If the browser is visible, ensure the list is on the 'read' shelf and press Enter to continue."
-                )
-                input()
-            except Exception:
-                print("No interactive input available; continuing without explicit confirmation.")
+            if debug:
+                print("Could not detect read-shelf rows immediately; continuing and allowing the visible browser session to finish login.")
+            time.sleep(2)
 
         scraped_count = 0
         page_num = 0
@@ -263,7 +258,7 @@ def extract_read_dates(
     if cache_path:
         write_cache(cache_path, cache_map)
 
-    scraped_path = (Path(cache_path).parent / "read_titles_scrape.csv") if cache_path else Path("data/enriched/read_titles_scrape.csv")
+    scraped_path = (Path(cache_path).parent / "read_dates_cache.csv") if cache_path else Path("data/enriched/read_dates_cache.csv")
     scraped_path.parent.mkdir(parents=True, exist_ok=True)
     with scraped_path.open("w", newline="", encoding="utf8") as fh:
         writer = csv.DictWriter(fh, fieldnames=["title", "author", "date_started", "date_finished"])

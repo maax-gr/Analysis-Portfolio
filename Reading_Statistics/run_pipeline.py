@@ -6,7 +6,7 @@ Features added for M5:
 - simple CSV cache support for extracted `read_dates`
 
 Usage:
-        python run_pipeline.py [--use-read-dates] [--refresh-read-dates] [--headless]                 data/raw_goodreads_library_export.csv data/enriched_goodreads_library_export.csv
+        python run_pipeline.py [--use-read-dates] [--refresh-read-dates] data/raw_goodreads_library_export.csv data/enriched_goodreads_library_export.csv
 """
 import sys
 from pathlib import Path
@@ -24,7 +24,6 @@ def main(argv):
     parser.add_argument("enriched_csv")
     parser.add_argument("--use-read-dates", action="store_true", help="Load or extract read_dates and merge before enrichment")
     parser.add_argument("--refresh-read-dates", action="store_true", help="Ignore cache and re-run extraction for missing items")
-    parser.add_argument("--headless", action="store_true", help="Run extractor in headless mode when supported")
     parser.add_argument("--debug-read-dates", action="store_true", help="Enable debug prints in the read_dates extractor")
     parser.add_argument("--page-limit", "--max-pages", dest="max_pages", type=int, default=0, help="Optional page-limit for the extractor (0 = unlimited)")
     parser.add_argument("--delay", type=float, default=1.0, help="Polite delay between page actions (seconds)")
@@ -46,26 +45,24 @@ def main(argv):
         cache_file = cache_dir / "read_dates_cache.csv"
         print("Loading read_dates cache (if present):", cache_file)
 
-        def _book_key(row: pd.Series) -> str:
-            title = row.get("Title") or ""
-            author = row.get("Author") or ""
-            s = f"{title} {author}".lower()
-            import re
-            s = re.sub(r"""["'`\[\]\(\){}:;,.\?/\|@#$%^&*_+=<>~<>-]+""", "", s)
-            s = re.sub(r"\s+", " ", s).strip()
-            return s
+        scraped_csv = cache_dir / "read_dates_cache.csv"
+        legacy_csv = cache_dir / "read_titles_scrape.csv"
 
-        rows = list(df_clean.iterrows())
-        if args.only_read:
-            rows = [(i, r) for i, r in rows if str(r.get("Exclusive Shelf")).lower() == "read"]
-        if args.limit and args.limit > 0:
-            rows = rows[: args.limit]
-        book_keys = [_book_key(r) for _, r in rows]
+        if args.refresh_read_dates or not (scraped_csv.exists() or legacy_csv.exists()):
+            # Live extraction is only used when requested or when no cache exists.
+            # The dashboard reads an already-written cache and should not trigger a
+            # second browser run while it validates the merge.
+            scrape_read_titles(limit=args.limit, headful=True, debug=args.debug_read_dates, delay=args.delay, max_pages=args.max_pages)
 
-        scraped_rows = scrape_read_titles(limit=args.limit, headful=not args.headless, debug=args.debug_read_dates, delay=args.delay, max_pages=args.max_pages)
-        scraped_csv = cache_dir / "read_titles_scrape.csv"
         if scraped_csv.exists():
-            scraped_df = pd.read_csv(scraped_csv)
+            source_csv = scraped_csv
+        elif legacy_csv.exists():
+            source_csv = legacy_csv
+        else:
+            source_csv = None
+
+        if source_csv is not None:
+            scraped_df = pd.read_csv(source_csv)
             cache_map = {}
             for _, row in scraped_df.iterrows():
                 key = str(row.get("key") or row.get("title") or "")

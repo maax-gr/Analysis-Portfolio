@@ -44,10 +44,10 @@ The app currently shows a minimal "Hello — Reading Dashboard" page (M1). Subse
 Use the Goodreads title scraper with a conservative delay and a short page cap to test the flow without crawling the full shelf:
 
 ```bash
-python -m src.goodreads_title_scraper --headless --page-limit 5 --delay 1.0
+python -m src.goodreads_title_scraper --page-limit 5 --delay 1.0
 ```
 
-The default delay is now 1.0s to reduce the chance of Goodreads rate-limiting or page-load crashes during longer runs. Use `--page-limit 5` (or `--max-pages 5`) to validate the extractor on a small subset before running a full extraction.
+The default delay is now 1.0s to reduce the chance of Goodreads rate-limiting or page-load crashes during longer runs. Use `--page-limit 5` (or `--max-pages 5`) to validate the extractor on a small subset before running a full extraction. The scraper opens a visible browser window and continues automatically without needing a terminal confirmation.
 
 ## Notes / Next steps
 
