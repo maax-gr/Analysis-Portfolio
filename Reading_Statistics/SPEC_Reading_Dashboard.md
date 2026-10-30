@@ -11,7 +11,7 @@ Comments are indicated as `{{ comment }}` and are not subject of the current imp
 
 **Primary user(s):** 
 - me
-- would be nice to have the dashboard accessible through github, so I can show it to friends
+- would be nice to have the dashboard accessible through github, so I can show it to people
 
 **Out of scope:** 
 - Lookup of missing or additional data (will be added in a later iteration)
@@ -33,7 +33,7 @@ Comments are indicated as `{{ comment }}` and are not subject of the current imp
 Implementation constraints:
 - The Goodreads extractor is intentionally headful only: it opens a visible browser window for login and scraping. `--headless` is not supported because Goodreads sign-in is interactive and headless auth is unreliable.
 - The scraper starts automatically when the user triggers it from the dashboard; it does not wait for a terminal prompt.
-- The dashboard must stay responsive while the scraper runs in the background and refresh after the extraction finishes and the cache is merged into the enriched CSV.
+- The dashboard must enter an idle/locked state while the scraper runs in the background and refresh after the extraction finishes and the cache is merged into the enriched CSV.
 - The extraction step is an offline pipeline step. It is not executed by the main dashboard rendering loop.
 - Conservative delays are required to avoid rate issues or page-load problems: default is `1.0s` between navigations.
 
@@ -42,8 +42,7 @@ Implementation constraints:
 data/
 raw_goodreads_library_export.csv            # Goodreads export (gitignored)
 enriched_goodreads_library_export.csv       # output of enrichment
-enriched/
-  read_dates_cache.csv                      # intermediate scraper cache
+read_dates_cache.csv                        # intermediate scraper cache
 notebooks/         # exploration only
 src/
 cleaning.py        # load + clean Goodreads CSV
@@ -79,12 +78,12 @@ Responsibilities:
 - Open the read shelf directly and scrape all visible books on each page.
 - Save each visible `title` and `author` encountered on the shelf.
 - For each book, visit the per-row review view page when available and parse the "Reading process" block for `Started Reading` and `Finished Reading` dates.
-- Use the first/most recent valid date pair per book, depending on the page data, and store it in `data/enriched/read_dates_cache.csv`.
+- Use the first/most recent valid date pair per book, depending on the page data, and store it in `data/read_dates_cache.csv`.
 - Support smoke tests with a `--page-limit` / `--max-pages` option and a default `--delay` of `1.0s`.
 - Do not require terminal confirmation before continuing after page load; the user can log in in the visible browser window and the script continues automatically.
 
 Scraper output:
-- Final cache file: `data/enriched/read_dates_cache.csv`
+- Final cache file: `data/read_dates_cache.csv`
 - Columns: `title, author, key, date_started, date_finished`
 - `key` is the normalized `Title + Author` key used by the enrichment layer.
 
@@ -136,10 +135,13 @@ The dashboard must read from the enriched CSV for its metrics and visualizations
 
 Requirements:
 - Launching the dashboard should show the metrics already available from the current enriched data.
-- A sidebar button named `Extract reading dates from Goodreads` starts the scraper in the background.
+- A sidebar button named `Extract reading dates from Goodreads` opens a confirmation popup (`Are you sure?`) with `Yes` and `No`.
+- Pressing `Yes` starts the scraper in the background.
+- Pressing `No` aborts and returns to the current dashboard state.
+- A sidebar button named `Re-run from raw data` also opens the same confirmation popup and only proceeds on `Yes`.
 - The button is disabled while the scraper is already running.
 - After extraction completes, the dashboard reruns the pipeline and refreshes the view to reflect the newly merged dates.
-- This refresh uses the cache file `data/enriched/read_dates_cache.csv` and merges it into the raw read-data output.
+- This refresh uses the cache file `data/read_dates_cache.csv` and merges it into the raw read-data output.
 
 ### 4.6 Additional stats to calculate
 - Days until finished: number of days between `Date Started` and `Date Finished`
@@ -156,41 +158,46 @@ Requirements:
 {{ 
 Additional columns (Column | Type | Description ):
 * genre_raw | list[str] | Raw categories/subjects from the API 
-* genre | str | Mapped to one of my broad genres (see 5.3)
-* lookup_status | str | matched / not_found }}
+* genre | str | Mapped to one of my broad genres (see 5.3); null/NA if no reliable match
+* lookup_status | str | `matched` / `not_found` }}
 
 
-{{ ## 5. Genre Enrichment
+## 5. Genre Enrichment
 
 ### 5.1 Sources & order of attempts
-1. TODO (e.g. Google Books by ISBN13)
-2. TODO (e.g. Open Library by ISBN)
-3. TODO (fallback: title + author search)
-4. Manual overrides file: `data/manual_genres.csv` (title/ISBN → genre)
+1. Google Books by ISBN-13 (preferred when available and valid)
+2. Google Books by ISBN-10 normalized to ISBN-13 if needed
+3. If ISBN lookup fails or appears mismatched, fallback to Google Books search by normalized title + author
+4. Open Library as a secondary source when Google Books is unavailable or incomplete; on Open Library, treat "Subjects" / "Themen" as the raw genre list to collect
+5. No manual override file for now; if no genre is found, leave `genre` as null/NA and `lookup_status` as `not_found`
 
 ### 5.2 Behaviour
-- Cache every response (TODO: SQLite / CSV / JSON) so each book is looked up once.
-- Rate limiting: TODO (e.g. 1 request/sec, set a User-Agent)
-- Failures: log unmatched books to `data/enriched/unmatched.csv`; do not crash.
+- Cache every response by canonical lookup key so each book is looked up once.
+- Collect all raw subjects/genres returned by the API/source, not just the first match; we will refine the mapping rule later.
+- Use a small, explicit sleep / rate limit between requests to avoid hitting API limits.
+- Failures should be non-fatal: unmatched books remain valid and are simply left with `genre = null` and `lookup_status = not_found`.
+- `None` should never be treated as `Other`; `Other` is only used when a non-empty subject list exists but no category matches.
 - Re-running should skip already-cached books unless `--refresh` is passed.
-- API keys: read from environment variables / `.env` (never committed). TODO: list variable names.
+- API keys: read from environment variables / `.env` (never committed). Initial implementation may use a public Google Books request without a key when allowed; if a key is needed later, it must be configured via env.
+- The lookup should use the same normalization helpers as the rest of the project to avoid ISBN/title-author mismatches due to punctuation or formatting.
 
 ### 5.3 Genre mapping
 > Map messy raw categories to a small, fixed set. One primary genre per book.
+> We collect all available subject strings and then apply a deterministic rule order: the first matching category wins.
 
 | My genre | Raw terms that map to it (case-insensitive contains) |
 |---|---|
-| Crime / Mystery | detective, mystery, thriller, TODO |
-| Science Fiction | TODO |
-| Fantasy | TODO |
-| Literary Fiction | TODO |
-| Non-fiction: History | TODO |
-| Non-fiction: Science | TODO |
-| Biography / Memoir | TODO |
-| TODO | TODO |
-| Other | fallback when nothing matches |
+| Crime / Mystery | detective, mystery, thriller, crime, noir, police, spy |
+| Science Fiction | science fiction, sci fi, sci-fi, speculative fiction, space opera, space |
+| Fantasy | fantasy, epic fantasy, urban fantasy, magic, wizard, dragons, elf, hobbit, mythology, mythic, quest, fairy tale, sorcery |
+| Literary Fiction | literary fiction, contemporary fiction, classic literature, literature |
+| Non-fiction: History | history, historical, military history, world history |
+| Non-fiction: Science | science, nature, astronomy, biology, physics, technology, medicine |
+| Self-help / Psychology | psychology, self help, motivation, thought and thinking, conduct of life, happiness, behavior modification, personal growth, sociology, interpersonal relations |
+| Biography / Memoir | biography, memoir, autobiography, personal narrative, travel, travelogue, hiking, outdoor, adventure, essay, essays |
+| Other | fallback when a non-empty subject list exists but no rule matches |
 
-**Conflict rule when several match:** TODO (e.g. first match in the table order wins) }}
+**Conflict rule when several match:** first match in the table order wins. This is intentional and makes the mapping deterministic. If no category matches and there is at least one raw subject, use `Other`; if there are no raw subjects, leave `genre` as null. 
 
 
 ## 6. Dashboard Requirements
@@ -225,6 +232,13 @@ Show all stats for filtered range
   * takes global filter into account
 2. Pages read over time
   * Line Chart. Time Series on x-axis, "pages read on day" on y-axis
+3. Pages vs Rating
+  * Scatter plot
+  * x-axis: `My Rating`
+  * y-axis: `Number of Pages`
+  * takes global filter into account
+  * The plot is square (1:1 aspect ratio), occupies roughly half the screen width, and leaves the adjacent space empty for future plots.
+  * A checkbox `Limit pages axis to 1000` restricts the y-axis to 0..1000 and hides any books above that threshold from the visible range (without removing them from the underlying data set).
 
 ### 6.5 Layout & style
 - single page to begin with (might be modified when further charts are added)
@@ -234,6 +248,7 @@ Show all stats for filtered range
  - Chart layout: two main charts should be presented side-by-side in the same row
    - Left: `Books read per month` (bar chart)
    - Right: `Pages read over time` (line chart)
+ - `Pages vs Rating` scatter plot should be placed below the two main charts (full-width for now)
  - KPI section should occupy no more than 25% of available space at the top
  - Theme & colors: tbd. Start with grayscale
  - Chart titles on top of chart. Centered around the middle of each graph. Axis titles centered around middle of axis.
@@ -265,7 +280,7 @@ M5 | Implement `read_dates` extraction (Playwright)
     * no `--headless` flag — the scraper runs in a visible browser window for login and automation.
     * `--debug` / `--verbose` — print visited URLs, matched lines, and parsing decisions for troubleshooting.
   - Output format:
-    * Cache CSV: `data/enriched/read_dates_cache.csv` with columns `book_key,read_dates` where `read_dates` is `START,END[;START,END]*`.
+    * Cache CSV: `data/read_dates_cache.csv` with columns `book_key,read_dates` where `read_dates` is `START,END[;START,END]*`.
     * Extractor must be resilient to missing per-row `review/show` links; prefer visiting `review/show/<id>` when present.
   - Parsing policy:
     * Pair `Started` → `Finished` events in order of appearance; if a `Finished` appears without a preceding `Started`, skip that pair.
@@ -278,7 +293,7 @@ M6 | Integrate extractor into pipeline and enrichment
 
 M7 | CLI flags, caching and Streamlit toggle
   - Add a `--use-read-dates` flag to `run_pipeline.py` and a Streamlit sidebar toggle to enable/skip extraction at runtime.
-  - Implement simple caching for extracted results (CSV cache in `data/enriched/`) and a `--refresh` option to re-run extraction.
+  - Implement simple caching for extracted results (CSV cache in `data/`) and a `--refresh` option to re-run extraction.
 
 {{
 M8 | Tests, validation and sample data

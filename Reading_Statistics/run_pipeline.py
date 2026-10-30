@@ -15,6 +15,7 @@ import pandas as pd
 
 from src.cleaning import load_raw_csv, clean_dataframe
 from src.enrichment import compute_enrichment, match_scraped_titles_to_raw, merge_read_dates_into_df
+from src.genre_enrichment import enrich_dataframe_genres
 from src.goodreads_title_scraper import scrape_read_titles
 
 
@@ -40,15 +41,14 @@ def main(argv):
             print(" -", t)
 
     if args.use_read_dates:
-        cache_dir = enriched.parent / "enriched"
+        cache_dir = enriched.parent
         cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = cache_dir / "read_dates_cache.csv"
-        print("Loading read_dates cache (if present):", cache_file)
-
         scraped_csv = cache_dir / "read_dates_cache.csv"
-        legacy_csv = cache_dir / "read_titles_scrape.csv"
+        legacy_scraped_csv = cache_dir / "enriched" / "read_dates_cache.csv"
+        legacy_csv = cache_dir / "enriched" / "read_titles_scrape.csv"
+        print("Loading read_dates cache (if present):", scraped_csv)
 
-        if args.refresh_read_dates or not (scraped_csv.exists() or legacy_csv.exists()):
+        if args.refresh_read_dates or not (scraped_csv.exists() or legacy_scraped_csv.exists() or legacy_csv.exists()):
             # Live extraction is only used when requested or when no cache exists.
             # The dashboard reads an already-written cache and should not trigger a
             # second browser run while it validates the merge.
@@ -56,6 +56,8 @@ def main(argv):
 
         if scraped_csv.exists():
             source_csv = scraped_csv
+        elif legacy_scraped_csv.exists():
+            source_csv = legacy_scraped_csv
         elif legacy_csv.exists():
             source_csv = legacy_csv
         else:
@@ -80,6 +82,7 @@ def main(argv):
 
     df_merged = df_merged[df_merged["Exclusive Shelf"].fillna("").str.lower() == "read"].copy()
     df_enriched = compute_enrichment(df_merged)
+    df_enriched = enrich_dataframe_genres(df_enriched, cache={})
     enriched.parent.mkdir(parents=True, exist_ok=True)
     df_enriched.to_csv(enriched, index=False)
     print(f"Wrote enriched CSV to {enriched}")

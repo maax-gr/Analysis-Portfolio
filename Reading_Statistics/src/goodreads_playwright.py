@@ -2,7 +2,7 @@
 
 The extractor intentionally scrapes every visible book on the user's read shelf,
 records the title and author, opens each book's `/review/show/...` page, parses
-"Reading process", and stores the result in `data/enriched/read_dates_cache.csv`.
+"Reading process", and stores the result in `data/read_dates_cache.csv`.
 """
 from typing import Dict, Iterable, Optional
 import csv
@@ -258,7 +258,7 @@ def extract_read_dates(
     if cache_path:
         write_cache(cache_path, cache_map)
 
-    scraped_path = (Path(cache_path).parent / "read_dates_cache.csv") if cache_path else Path("data/enriched/read_dates_cache.csv")
+    scraped_path = (Path(cache_path).parent / "read_dates_cache.csv") if cache_path else Path("data/read_dates_cache.csv")
     scraped_path.parent.mkdir(parents=True, exist_ok=True)
     with scraped_path.open("w", newline="", encoding="utf8") as fh:
         writer = csv.DictWriter(fh, fieldnames=["title", "author", "date_started", "date_finished"])

@@ -49,12 +49,13 @@ def pages_over_time(df: pd.DataFrame, start: pd.Timestamp = None, end: pd.Timest
     """Return daily timeseries of pages read per day.
 
     Algorithm: for each book with a non-null `average pages read per day`,
-    add that daily value to every date between `Date Added` and `Date Read` inclusive.
+    add that daily value to every date between `Date Started` and
+    `Date Finished` inclusive.
 
     Parameters
-    - df: enriched DataFrame containing `Date Added`, `Date Read`, and
+    - df: enriched DataFrame containing `Date Started`, `Date Finished`, and
       `average pages read per day`.
-    - start, end: optional range to limit the output. Defaults to min(Date Added) .. today.
+    - start, end: optional range to limit the output. Defaults to min(Date Started) .. today.
     """
     # Work on a copy to avoid mutating caller data
     df = df.copy()
@@ -62,19 +63,19 @@ def pages_over_time(df: pd.DataFrame, start: pd.Timestamp = None, end: pd.Timest
     # Keep only rows that have the necessary fields
     mask = (
         df["average pages read per day"].notna()
-        & df["Date Added"].notna()
-        & df["Date Read"].notna()
+        & df["Date Started"].notna()
+        & df["Date Finished"].notna()
     )
     # We only need the three columns for the allocation algorithm
-    df_valid = df.loc[mask, ["Date Added", "Date Read", "average pages read per day"]]
+    df_valid = df.loc[mask, ["Date Started", "Date Finished", "average pages read per day"]]
 
     # If there's no valid data, return an empty float Series
     if df_valid.empty:
         return pd.Series(dtype="float")
 
-    # Determine the output range. Default: from earliest Date Added to today.
+    # Determine the output range. Default: from earliest Date Started to today.
     if start is None:
-        start = df_valid["Date Added"].min()
+        start = df_valid["Date Started"].min()
     if end is None:
         end = pd.Timestamp.now().normalize()
 
@@ -84,12 +85,12 @@ def pages_over_time(df: pd.DataFrame, start: pd.Timestamp = None, end: pd.Timest
     series = pd.Series(0.0, index=all_days)
 
     # For each book, add its per-day contribution to every day between
-    # Date Added and Date Read (inclusive). This is simple and easy to
+    # Date Started and Date Finished (inclusive). This is simple and easy to
     # understand, and works well for modest-sized personal datasets.
     for _, row in df_valid.iterrows():
         # normalize timestamps to midnight so slicing matches the index
-        s = row["Date Added"].normalize()
-        e = row["Date Read"].normalize()
+        s = row["Date Started"].normalize()
+        e = row["Date Finished"].normalize()
         daily = float(row["average pages read per day"])
 
         # Clip the book's interval to the series range so we don't attempt
@@ -108,5 +109,4 @@ def pages_over_time(df: pd.DataFrame, start: pd.Timestamp = None, end: pd.Timest
 
     # The result is a daily time series (float) representing pages read per day
     return series
-
 

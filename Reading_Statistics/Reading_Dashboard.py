@@ -1,8 +1,9 @@
 """Streamlit entry point for Reading Statistics Dashboard.
 
-Implements Milestone M3: fixed "This Year" filter, KPI cards, and two charts
-(books per month and pages over time). The app reads from the enriched CSV
-produced by the pipeline: `data/enriched_goodreads_library_export.csv`.
+Implements KPI cards, month-range filtering, Goodreads extraction workflow,
+and charts (books per month, pages over time, pages vs rating). The app reads
+from the enriched CSV produced by the pipeline:
+`data/enriched_goodreads_library_export.csv`.
 """
 from pathlib import Path
 import os
@@ -25,12 +26,20 @@ from enrichment import compute_enrichment
 
 ENRICHED_CSV = ROOT / "data" / "enriched_goodreads_library_export.csv"
 RAW_CSV = ROOT / "data" / "raw_goodreads_library_export.csv"
-CACHE_CSV = ROOT / "data" / "enriched" / "read_dates_cache.csv"
+CACHE_CSV = ROOT / "data" / "read_dates_cache.csv"
 
 
 def is_process_running(pid: Optional[int]) -> bool:
     if pid is None:
         return False
+    # Reap child exits when possible so finished scraper processes don't stay as zombies.
+    try:
+        finished_pid, _ = os.waitpid(pid, os.WNOHANG)
+        if finished_pid == pid:
+            return False
+    except ChildProcessError:
+        # Not a child process in this runtime; fall through to signal probe.
+        pass
     try:
         os.kill(pid, 0)
         return True
@@ -42,7 +51,7 @@ def clear_goodreads_extractor_state() -> None:
     """Reset extractor state after scraper completion and merge."""
     st.session_state.pop("goodreads_extractor_pid", None)
     st.session_state.pop("goodreads_extractor_started_at", None)
-    st.session_state.pop("goodreads_extractor_status", None)
+    st.session_state["goodreads_extractor_status"] = "idle"
 
 
 def run_pipeline_with_scraped_dates() -> None:
@@ -70,6 +79,37 @@ def run_pipeline_with_scraped_dates() -> None:
 
     st.session_state["goodreads_last_run"] = time.time()
     st.success("Goodreads reading dates were merged into the dashboard data.")
+
+
+def _show_confirmation_dialog(action: str) -> None:
+    """Show a confirmation popup before destructive/long-running actions."""
+    message = "Are you sure?"
+
+    if hasattr(st, "dialog"):
+        @st.dialog("Confirm action")
+        def _confirm_dialog() -> None:
+            st.write(message)
+            yes_col, no_col = st.columns(2)
+            if yes_col.button("Yes", key=f"{action}_confirm_yes"):
+                st.session_state["confirmed_action"] = action
+                st.session_state.pop("pending_confirmation", None)
+                st.rerun()
+            if no_col.button("No", key=f"{action}_confirm_no"):
+                st.session_state.pop("pending_confirmation", None)
+                st.rerun()
+
+        _confirm_dialog()
+        return
+
+    st.warning(message)
+    yes_col, no_col = st.columns(2)
+    if yes_col.button("Yes", key=f"{action}_confirm_yes_fallback"):
+        st.session_state["confirmed_action"] = action
+        st.session_state.pop("pending_confirmation", None)
+        st.rerun()
+    if no_col.button("No", key=f"{action}_confirm_no_fallback"):
+        st.session_state.pop("pending_confirmation", None)
+        st.rerun()
 
 
 def coerce_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -224,53 +264,72 @@ def compute_kpis(df: pd.DataFrame) -> dict:
 def main() -> None:
     st.set_page_config(page_title="Reading Dashboard", layout="wide")
     st.markdown("### Reading Dashboard")
+    st.session_state.setdefault("pending_confirmation", None)
+    st.session_state.setdefault("confirmed_action", None)
 
     running_pid = st.session_state.get("goodreads_extractor_pid")
     extractor_status = st.session_state.get("goodreads_extractor_status", "idle")
 
-    if running_pid:
+    if extractor_status == "running" and running_pid:
         if is_process_running(running_pid):
-            extractor_status = "running"
             with st.sidebar:
                 st.status("🔄 Goodreads extraction running", state="running")
                 st.write("Scraping titles and dates from Goodreads.")
+            st.info("Dashboard is temporarily locked while Goodreads extraction is running.")
             with st.spinner("Extracting Goodreads read dates..."):
                 time.sleep(2)
             st.rerun()
-        else:
-            extractor_status = "processing"
-            with st.sidebar:
-                st.status("🔄 Matching scraped dates and recalculating dashboard data", state="running")
-                st.write("The scraper has finished; updating the enriched CSV and metrics.")
-            with st.spinner("Matching Goodreads dates to the raw export and recalculating metrics..."):
-                # The scraper itself triggers the merge and recompute step after it writes
-                # the cache file, but this extra safeguard makes the dashboard wait for the
-                # update to settle before returning to interactive mode.
-                if CACHE_CSV.exists():
-                    run_pipeline_with_scraped_dates()
-            clear_goodreads_extractor_state()
-            st.rerun()
+            return
+        st.session_state["goodreads_extractor_status"] = "matching"
+        extractor_status = "matching"
+
+    if extractor_status == "matching":
+        with st.sidebar:
+            st.status("🔄 Matching scraped dates and recalculating dashboard data", state="running")
+            st.write("Extraction finished; now updating dates and metrics.")
+        st.info("Dashboard is temporarily locked while scraped data is merged.")
+        with st.spinner("Matching Goodreads dates to the export and recalculating metrics..."):
+            run_pipeline_with_scraped_dates()
+        clear_goodreads_extractor_state()
+        st.rerun()
+        return
 
     # Sidebar controls: pipeline and filters
     st.sidebar.header("Data / Pipeline")
-    force_run = st.sidebar.button("Re-run from raw data")
+    request_rebuild = st.sidebar.button("Re-run from raw data")
 
     extractor_is_running = bool(running_pid and is_process_running(running_pid))
-    if extractor_is_running:
-        st.sidebar.markdown("🔄 Goodreads extraction running in background")
-    else:
-        if extractor_status != "processing":
-            st.session_state.pop("goodreads_extractor_pid", None)
-            st.session_state.pop("goodreads_extractor_started_at", None)
-            st.session_state.pop("goodreads_extractor_status", None)
 
-    extract_read_dates = st.sidebar.button(
+    request_extract = st.sidebar.button(
         "Extract reading dates from Goodreads",
         key="goodreads_scraper_button",
-        disabled=extractor_is_running or extractor_status == "processing",
+        disabled=extractor_is_running or extractor_status in {"running", "matching"},
     )
-    if extract_read_dates:
+    if request_rebuild:
+        st.session_state["pending_confirmation"] = "rebuild"
+        st.rerun()
+        return
+    if request_extract:
+        st.session_state["pending_confirmation"] = "extract"
+        st.rerun()
+        return
+
+    pending_confirmation = st.session_state.get("pending_confirmation")
+    if pending_confirmation in {"extract", "rebuild"}:
+        # Treat dialog dismissal via the "X" as "No" by clearing pending state
+        # before opening the dialog; only an explicit "Yes" sets confirmed_action.
+        st.session_state.pop("pending_confirmation", None)
+        _show_confirmation_dialog(pending_confirmation)
+        return
+
+    confirmed_action = st.session_state.pop("confirmed_action", None)
+    force_run = confirmed_action == "rebuild"
+    run_extract = confirmed_action == "extract"
+
+    if run_extract:
         launch_goodreads_extractor()
+        st.rerun()
+        return
 
     # If the user triggered force_run, rebuild the enriched dataset from the raw CSV.
     if force_run:
@@ -379,8 +438,8 @@ def main() -> None:
             pages_start = start_ts
             pages_end = end_ts
         except NameError:
-            pages_start = df_range["Date Added"].min() if "Date Added" in df_range.columns else df_range["Date Read"].min()
-            pages_end = df_range["Date Read"].max()
+            pages_start = df_range["Date Started"].min() if "Date Started" in df_range.columns else df_range["Date Read"].min()
+            pages_end = df_range["Date Finished"].max() if "Date Finished" in df_range.columns else df_range["Date Read"].max()
 
         series_pages = pages_over_time(df_range, start=pages_start, end=pages_end)
         if series_pages.empty:
@@ -389,7 +448,33 @@ def main() -> None:
             fig2 = px.line(x=series_pages.index, y=series_pages.values, labels={"x": "Date", "y": "Pages read"})
             st.plotly_chart(fig2, use_container_width=True)
 
+    st.markdown("---")
+    scatter_col, _ = st.columns([1, 1])
+    with scatter_col:
+        st.subheader("Pages vs Rating")
+        limit_pages_1000 = st.checkbox("Limit pages axis to 1000", value=False, key="limit_pages_1000")
+        scatter_df = df_range.copy()
+        scatter_df["Number of Pages"] = pd.to_numeric(scatter_df["Number of Pages"], errors="coerce")
+        scatter_df["My Rating"] = pd.to_numeric(scatter_df["My Rating"], errors="coerce")
+        scatter_df = scatter_df.dropna(subset=["Number of Pages", "My Rating"])
+        if scatter_df.empty:
+            st.info("No page/rating pairs available for the selected range.")
+        else:
+            fig3 = px.scatter(
+                scatter_df,
+                x="My Rating",
+                y="Number of Pages",
+                labels={"My Rating": "Rating", "Number of Pages": "Page count"},
+                template="plotly_white",
+            )
+            fig3.update_traces(marker={"size": 20, "opacity": 0.2})
+            if limit_pages_1000:
+                fig3.update_yaxes(range=[0, 1000])
+            fig3.update_xaxes(range=[0.5, 5.5], scaleanchor="y", scaleratio=1, constrain="domain")
+            fig3.update_yaxes(scaleanchor="x", scaleratio=1, constrain="domain")
+            fig3.update_layout(width=700, height=700, margin=dict(l=50, r=30, t=30, b=50))
+            st.plotly_chart(fig3, use_container_width=False)
+
 
 if __name__ == "__main__":
     main()
-

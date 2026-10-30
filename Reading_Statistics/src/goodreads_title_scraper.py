@@ -3,7 +3,7 @@
 This is the working extraction path: it visits the Goodreads review list
 (shelf=read), collects the title and author from each row, records visible
 reading dates where present, and writes the result to
-`data/enriched/read_dates_cache.csv`.
+`data/read_dates_cache.csv`.
 
 Usage example (from repo root):
     python3 -m src.goodreads_title_scraper --limit 25 --max-pages 5
@@ -15,8 +15,6 @@ Note: Playwright must be installed and browsers set up:
 from typing import List, Tuple, Optional
 import time
 import csv
-import subprocess
-import sys
 from pathlib import Path
 import re
 from datetime import datetime
@@ -138,7 +136,7 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
                                 row_html = r.inner_html()
                             except Exception:
                                 row_html = "<could not get inner_html>"
-                            snippets_dir = Path("data/enriched/read_titles_row_snippets")
+                            snippets_dir = Path("data/read_titles_row_snippets")
                             snippets_dir.mkdir(parents=True, exist_ok=True)
                             snippet_file = snippets_dir / f"page{page_num}_row{scraped+1}.html"
                             with snippet_file.open("w", encoding="utf8") as sf:
@@ -203,7 +201,7 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
         browser.close()
 
     # write results to CSV for inspection
-    out_path = Path("data/enriched/read_dates_cache.csv")
+    out_path = Path("data/read_dates_cache.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf8") as fh:
         writer = csv.DictWriter(fh, fieldnames=["title", "author", "key", "date_started", "date_finished"])
@@ -211,20 +209,6 @@ def scrape_read_titles(limit: int = 0, headful: bool = True, debug: bool = False
         for row in out:
             t, a, k, ds, dr = row
             writer.writerow({"title": t, "author": a, "key": k, "date_started": ds, "date_finished": dr})
-
-    # Trigger the match + recompute step immediately after writing the cache so the
-    # dashboard updates from the scraped data without requiring a second manual click.
-    project_root = Path(__file__).resolve().parents[1]
-    raw_csv = project_root / "data" / "raw_goodreads_library_export.csv"
-    enriched_csv = project_root / "data" / "enriched_goodreads_library_export.csv"
-    pipeline = project_root / "run_pipeline.py"
-    if raw_csv.exists() and pipeline.exists():
-        subprocess.run(
-            [sys.executable, str(pipeline), str(raw_csv), str(enriched_csv), "--use-read-dates"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
 
     return out
 
@@ -241,4 +225,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     results = scrape_read_titles(limit=args.limit, headful=args.headful, debug=args.debug, delay=args.delay, max_pages=args.max_pages)
-    print(f"Scraped {len(results)} titles. Wrote data/enriched/read_dates_cache.csv")
+    print(f"Scraped {len(results)} titles. Wrote data/read_dates_cache.csv")
