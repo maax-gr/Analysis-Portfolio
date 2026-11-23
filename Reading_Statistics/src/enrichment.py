@@ -78,8 +78,9 @@ def compute_enrichment(df: pd.DataFrame) -> pd.DataFrame:
 
     Rules implemented per spec:
     - if Number of Pages is null -> average pages/day = NaN
-    - if Days until finished == 0 -> average pages/day = NaN
-    - if scraped dates are missing, fall back to Date Added / Date Read
+    - if Days until finished <= 0 -> average pages/day = NaN
+    - if scraped dates are missing, fall back to Date Added / Date Read;
+      a fallback start after the finish is clamped to the finish
     """
     df = df.copy()
 
@@ -87,13 +88,16 @@ def compute_enrichment(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = pd.NaT
 
-    if "Date Added" in df.columns:
-        df["Date Started"] = pd.to_datetime(df["Date Started"], errors="coerce")
-        df["Date Started"] = df["Date Started"].combine_first(pd.to_datetime(df["Date Added"], errors="coerce"))
-
+    df["Date Started"] = pd.to_datetime(df["Date Started"], errors="coerce")
+    df["Date Finished"] = pd.to_datetime(df["Date Finished"], errors="coerce")
     if "Date Read" in df.columns:
-        df["Date Finished"] = pd.to_datetime(df["Date Finished"], errors="coerce")
         df["Date Finished"] = df["Date Finished"].combine_first(pd.to_datetime(df["Date Read"], errors="coerce"))
+
+    if "Date Added" in df.columns:
+        added = pd.to_datetime(df["Date Added"], errors="coerce")
+        # A book can be added to Goodreads after it was finished.
+        added = added.where(df["Date Finished"].isna() | (added <= df["Date Finished"]), df["Date Finished"])
+        df["Date Started"] = df["Date Started"].combine_first(added)
 
     start_col = "Date Started"
     end_col = "Date Finished"
@@ -107,7 +111,7 @@ def compute_enrichment(df: pd.DataFrame) -> pd.DataFrame:
         days = row.get("Days until finished")
         if pd.isna(pages) or pd.isna(days):
             return pd.NA
-        if int(days) == 0:
+        if int(days) <= 0:
             return pd.NA
         return float(pages) / float(int(days))
 
@@ -241,16 +245,11 @@ def merge_read_dates_into_df(df: pd.DataFrame, cache_map=None) -> pd.DataFrame:
         if not entry:
             continue
         start_s, end_s = entry
-        try:
-            start_dt = pd.to_datetime(start_s, format="%Y/%m/%d", errors="coerce")
-            end_dt = pd.to_datetime(end_s, format="%Y/%m/%d", errors="coerce")
-        except Exception:
-            continue
-        if pd.isna(start_dt) or pd.isna(end_dt):
-            continue
-        if pd.notna(row.get("Date Added")) and end_dt < row.get("Date Added"):
-            end_dt = row.get("Date Added")
-        df.at[idx, "Date Started"] = start_dt
-        df.at[idx, "Date Finished"] = end_dt
+        start_dt = pd.to_datetime(start_s, format="%Y/%m/%d", errors="coerce")
+        end_dt = pd.to_datetime(end_s, format="%Y/%m/%d", errors="coerce")
+        if pd.notna(start_dt):
+            df.at[idx, "Date Started"] = start_dt
+        if pd.notna(end_dt):
+            df.at[idx, "Date Finished"] = end_dt
 
     return df

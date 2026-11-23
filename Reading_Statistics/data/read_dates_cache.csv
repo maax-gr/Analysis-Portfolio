@@ -1,4 +1,11 @@
 title,author,key,date_started,date_finished
+Lucky Day,"Tingle, Chuck",lucky day tingle chuck,2026/10/25,2026/11/22
+"The Pillars of the Earth (Kingsbridge, #1)","Follett, Ken",the pillars of the earth kingsbridge 1 follett ken,2026/09/20,2026/11/16
+"If Anyone Builds It, Everyone Dies: Why Superhuman AI Would Kill Us All","Yudkowsky, Eliezer",if anyone builds it everyone dies why superhuman ai would kill us all yudkowsky eliezer,2026/11/03,2026/11/14
+Annihilation (Southern Reach #1),"VanderMeer, Jeff",annihilation southern reach 1 vandermeer jeff,2026/11/08,2026/11/12
+A Short Stay in Hell,"Peck, Steven L.",a short stay in hell peck steven l,2026/11/06,2026/11/08
+Frankenstein,"Shelley, Mary",frankenstein shelley mary,2026/10/29,2026/11/06
+"The Information: A History, a Theory, a Flood","Gleick, James",the information a history a theory a flood gleick james,2026/09/22,2026/10/28
 James,"Everett, Percival",james everett percival,2026/10/06,2026/10/11
 "The Coming Wave: Technology, Power, and the Twenty-first Century's Greatest Dilemma","Suleyman, Mustafa",the coming wave technology power and the twentyfirst centurys greatest dilemma suleyman mustafa,2026/09/28,2026/10/08
 Take Me to Your Leader: Perspectives on Your First Alien Encounter,"Tyson, Neil deGrasse",take me to your leader perspectives on your first alien encounter tyson neil degrasse,2026/09/23,2026/09/28
@@ -77,7 +84,7 @@ Supercommunicators: How to Unlock the Secret Language of Connection,"Duhigg, Cha
 The Evolution of Agency: Behavioral Organization from Lizards to Humans,"Tomasello, Michael",the evolution of agency behavioral organization from lizards to humans tomasello michael,2025/03/16,2025/06/08
 Warum wir sterben: Die neue Wissenschaft des Alterns und die Suche nach dem ewigen Leben | Vom Nobelpreisträger für Chemie,"Ramakrishnan, Venki",warum wir sterben die neue wissenschaft des alterns und die suche nach dem ewigen leben vom nobelpreisträger für chemie ramakrishnan venki,2025/02/05,2025/06/05
 Views,"Kling, Marc-Uwe",views kling marcuwe,2025/06/01,2025/06/05
-"Cibola Burn (The Expanse, #4)","Corey, James S.A.",cibola burn the expanse 4 corey james sa,2025/04/28,2025/05/19
+Cibola Burn,"Corey, James S.A.",cibola burn corey james sa,2025/04/28,2025/05/19
 "Baustellen der Nation: Was wir jetzt in Deutschland ändern müssen | Das lang ersehnte Buch zum Podcast ""Lage der Nation""","Banse, Philip",baustellen der nation was wir jetzt in deutschland ändern müssen das lang ersehnte buch zum podcast lage der nation banse philip,2025/04/02,2025/04/29
 A Brief History of Black Holes: And Why Nearly Everything You Know About Them is Wrong,"Smethurst, Becky",a brief history of black holes and why nearly everything you know about them is wrong smethurst becky,2024/10/27,2025/04/27
 "Blindsight (Firefall, #1)","Watts, Peter",blindsight firefall 1 watts peter,2025/04/09,2025/04/27
@@ -115,7 +122,7 @@ Einsteins Hirn,Franzobel,einsteins hirn franzobel,2024/07/18,2024/08/02
 Finding Me,"Davis, Viola",finding me davis viola,2024/04/30,2024/07/29
 The Lathe of Heaven,"Le Guin, Ursula K.",the lathe of heaven le guin ursula k,2024/07/14,2024/07/17
 Piranesi,"Clarke, Susanna",piranesi clarke susanna,2024/07/09,2024/07/13
-Caliban’s War,"Corey, James S.A.",caliban’s war corey james sa,2024/06/29,2024/07/08
+"Caliban’s War (The Expanse, #2)","Corey, James S.A.",caliban’s war the expanse 2 corey james sa,2024/06/29,2024/07/08
 Mayflies,"O'Hagan, Andrew",mayflies ohagan andrew,2024/06/26,2024/06/29
 "Neuromancer (Sprawl, #1)","Gibson, William",neuromancer sprawl 1 gibson william,2024/06/16,2024/06/26
 Noch wach?,"Stuckrad-Barre, Benjamin von",noch wach stuckradbarre benjamin von,2024/05/27,2024/06/10
@@ -124,10 +131,10 @@ Hearts & Bones: Love Songs for Late Youth,"Mulvey, Niamh",hearts bones love song
 "Tress of the Emerald Sea (Hoid's Travails, #1)","Sanderson, Brandon",tress of the emerald sea hoids travails 1 sanderson brandon,2024/04/28,2024/05/12
 Educated,"Westover, Tara",educated westover tara,2024/02/24,2024/04/30
 Walking Practice,"Min, Dolki",walking practice min dolki,2024/04/21,2024/04/23
-Leviathan Wakes,"Corey, James S.A.",leviathan wakes corey james sa,2024/04/08,2024/04/20
+"Leviathan Wakes (The Expanse, #1)","Corey, James S.A.",leviathan wakes the expanse 1 corey james sa,2024/04/08,2024/04/20
 Klara and the Sun,"Ishiguro, Kazuo",klara and the sun ishiguro kazuo,2024/03/27,2024/04/07
 Do Androids Dream of Electric Sheep?,"Dick, Philip K.",do androids dream of electric sheep dick philip k,2024/03/22,2024/03/27
-"American Gods (American Gods, #1)","Gaiman, Neil",american gods american gods 1 gaiman neil,2024/03/10,2024/03/21
+American Gods,"Gaiman, Neil",american gods gaiman neil,2024/03/10,2024/03/21
 Dune: Tales from Arrakeen,"Herbert, Brian",dune tales from arrakeen herbert brian,,2024/03/21
 "Mickey7 (Mickey7, #1)","Ashton, Edward",mickey7 mickey7 1 ashton edward,2024/02/26,2024/03/10
 "Bookshops & Bonedust (Legends & Lattes, #0)","Baldree, Travis",bookshops bonedust legends lattes 0 baldree travis,2024/02/16,2024/02/25
@@ -259,6 +266,7 @@ Die Zeit der Wunder,"Bondoux, Anne-Laure",die zeit der wunder bondoux annelaure,
 "Thinking, Fast and Slow","Kahneman, Daniel",thinking fast and slow kahneman daniel,,
 "Words of Radiance (The Stormlight Archive, #2)","Sanderson, Brandon",words of radiance the stormlight archive 2 sanderson brandon,,
 Schuld,"Schirach, Ferdinand von",schuld schirach ferdinand von,,
+The Moral Molecule: The Source of Love and Prosperity,"Zak, Paul J.",the moral molecule the source of love and prosperity zak paul j,2026/09/08,
 Total Recall: My Unbelievably True Life Story,"Schwarzenegger, Arnold",total recall my unbelievably true life story schwarzenegger arnold,,
 Was macht man mit einer Idee?,"Yamada, Kobi",was macht man mit einer idee yamada kobi,,
 "Der Sieg des Kapitals: Wie der Reichtum in die Welt kam: Die Geschichte von Wachstum, Geld und Krisen","Herrmann, Ulrike",der sieg des kapitals wie der reichtum in die welt kam die geschichte von wachstum geld und krisen herrmann ulrike,,

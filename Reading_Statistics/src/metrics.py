@@ -18,9 +18,9 @@ def books_per_month(df: pd.DataFrame) -> pd.Series:
 
     Implementation notes for readability:
     - We build a boolean mask to select only relevant rows.
-    - `pd.Grouper(..., freq='M')` groups rows by calendar month based on
+    - `pd.Grouper(..., freq='MS')` groups rows by calendar month based on
       the `Date Read` column.
-    - The result of `groupby.size()` has a DatetimeIndex at month-end; we
+    - The result of `groupby.size()` has a DatetimeIndex at month-start; we
       convert it to a month-aligned timestamp for easier plotting.
     """
     # Select rows that should be counted: shelf must be 'read' and we need a date
@@ -38,7 +38,7 @@ def books_per_month(df: pd.DataFrame) -> pd.Series:
         return pd.Series(dtype="int")
 
     # Group by month (calendar month) and count entries per month
-    s = df2.groupby(pd.Grouper(key="Date Read", freq="M")).size()
+    s = df2.groupby(pd.Grouper(key="Date Read", freq="MS")).size()
 
     # Convert the index to a month-aligned timestamp (useful for plotting)
     s.index = s.index.to_period("M").to_timestamp()
@@ -79,6 +79,9 @@ def pages_over_time(df: pd.DataFrame, start: pd.Timestamp = None, end: pd.Timest
     if end is None:
         end = pd.Timestamp.now().normalize()
 
+    if pd.isna(start) or pd.isna(end) or start > end:
+        return pd.Series(dtype="float")
+
     # Create an index for every day in the requested range
     all_days = pd.date_range(start=start.normalize(), end=end.normalize(), freq="D")
     # Initialize a series of zeros (float) which we'll add daily allocations into
@@ -109,4 +112,3 @@ def pages_over_time(df: pd.DataFrame, start: pd.Timestamp = None, end: pd.Timest
 
     # The result is a daily time series (float) representing pages read per day
     return series
-

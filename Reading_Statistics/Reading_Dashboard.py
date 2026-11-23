@@ -6,9 +6,12 @@ from the enriched CSV produced by the pipeline:
 `data/enriched_goodreads_library_export.csv`.
 """
 from pathlib import Path
+from collections import Counter
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Optional
 import streamlit as st
@@ -20,8 +23,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.append(str(ROOT / "src"))
 
 from metrics import books_per_month, pages_over_time
-from cleaning import load_raw_csv, clean_dataframe
-from enrichment import compute_enrichment
+from run_pipeline import build_enriched
 
 
 ENRICHED_CSV = ROOT / "data" / "enriched_goodreads_library_export.csv"
@@ -54,14 +56,14 @@ def clear_goodreads_extractor_state() -> None:
     st.session_state["goodreads_extractor_status"] = "idle"
 
 
-def run_pipeline_with_scraped_dates() -> None:
+def run_pipeline_with_scraped_dates() -> bool:
     """Merge the latest scraper output (read_dates_cache.csv) into the enriched CSV."""
     if not RAW_CSV.exists():
         st.warning(f"Missing raw data at {RAW_CSV}.")
-        return
+        return False
     if not CACHE_CSV.exists():
         st.warning("Goodreads extraction finished, but no cache file was produced yet.")
-        return
+        return False
 
     cmd = [
         sys.executable,
@@ -75,27 +77,32 @@ def run_pipeline_with_scraped_dates() -> None:
         st.error("The pipeline refresh failed after the extraction finished.")
         if result.stderr:
             st.code(result.stderr.strip())
-        return
+        return False
 
     st.session_state["goodreads_last_run"] = time.time()
     st.success("Goodreads reading dates were merged into the dashboard data.")
+    return True
 
 
 def _show_confirmation_dialog(action: str) -> None:
     """Show a confirmation popup before destructive/long-running actions."""
     message = "Are you sure?"
 
+    def confirm() -> None:
+        st.session_state["confirmed_action"] = action
+        st.session_state.pop("pending_confirmation", None)
+
+    def cancel() -> None:
+        st.session_state.pop("pending_confirmation", None)
+
     if hasattr(st, "dialog"):
         @st.dialog("Confirm action")
         def _confirm_dialog() -> None:
             st.write(message)
             yes_col, no_col = st.columns(2)
-            if yes_col.button("Yes", key=f"{action}_confirm_yes"):
-                st.session_state["confirmed_action"] = action
-                st.session_state.pop("pending_confirmation", None)
+            if yes_col.button("Yes", key=f"{action}_confirm_yes", on_click=confirm):
                 st.rerun()
-            if no_col.button("No", key=f"{action}_confirm_no"):
-                st.session_state.pop("pending_confirmation", None)
+            if no_col.button("No", key=f"{action}_confirm_no", on_click=cancel):
                 st.rerun()
 
         _confirm_dialog()
@@ -103,13 +110,30 @@ def _show_confirmation_dialog(action: str) -> None:
 
     st.warning(message)
     yes_col, no_col = st.columns(2)
-    if yes_col.button("Yes", key=f"{action}_confirm_yes_fallback"):
+    if yes_col.button("Yes", key=f"{action}_confirm_yes_fallback", on_click=confirm):
+        st.rerun()
+    if no_col.button("No", key=f"{action}_confirm_no_fallback", on_click=cancel):
+        st.rerun()
+
+
+def _show_genre_dialog() -> None:
+    def choose(action: str) -> None:
         st.session_state["confirmed_action"] = action
         st.session_state.pop("pending_confirmation", None)
-        st.rerun()
-    if no_col.button("No", key=f"{action}_confirm_no_fallback"):
-        st.session_state.pop("pending_confirmation", None)
-        st.rerun()
+
+    def choices() -> None:
+        st.write("Choose which read-shelf books to look up.")
+        if st.button("Look up all books", key="genres_all", on_click=choose, args=("genres_all",)):
+            st.rerun()
+        if st.button("Look up missing books", key="genres_missing", on_click=choose, args=("genres_missing",)):
+            st.rerun()
+        if st.button("Cancel", key="genres_cancel", on_click=choose, args=("cancel",)):
+            st.rerun()
+
+    if hasattr(st, "dialog"):
+        st.dialog("Genre lookup")(choices)()
+    else:
+        choices()
 
 
 def coerce_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -123,31 +147,6 @@ def coerce_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
     return df
-
-
-def rebuild_enriched_from_raw_data() -> None:
-    """Run the actual raw-to-enriched pipeline, then return the resulting DataFrame."""
-    if not RAW_CSV.exists():
-        st.warning(f"Missing raw data at {RAW_CSV}.")
-        return None
-
-    cmd = [
-        sys.executable,
-        str(ROOT / "run_pipeline.py"),
-        str(RAW_CSV),
-        str(ENRICHED_CSV),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        st.error("The raw-data rebuild failed.")
-        if result.stderr:
-            st.code(result.stderr.strip())
-        return None
-
-    if ENRICHED_CSV.exists():
-        df = pd.read_csv(ENRICHED_CSV, keep_default_na=True)
-        return coerce_datetime_columns(df)
-    return None
 
 
 def launch_goodreads_extractor() -> None:
@@ -170,60 +169,62 @@ def launch_goodreads_extractor() -> None:
     st.toast("Goodreads extraction started in the background.")
 
 
+def launch_genre_lookup(mode: str) -> None:
+    """Run genre lookup in a separate process."""
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as progress_file:
+        progress_path = Path(progress_file.name)
+    cmd = [sys.executable, str(ROOT / "src" / "genre_enrichment.py"), str(ENRICHED_CSV),
+           "--mode", mode, "--progress-file", str(progress_path)]
+    try:
+        output = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+    except OSError:
+        progress_path.unlink(missing_ok=True)
+        raise
+    try:
+        process = subprocess.Popen(cmd, stdout=output, stderr=subprocess.STDOUT, text=True, cwd=ROOT)
+    except OSError:
+        output.close()
+        progress_path.unlink(missing_ok=True)
+        raise
+    st.session_state["genre_process"] = process
+    st.session_state["genre_output"] = output
+    st.session_state["genre_progress_path"] = progress_path
+
+
+def pages_rating_figure(df: pd.DataFrame, limit_pages: bool):
+    """Make the scatter plot match the layout of the other charts."""
+    figure = px.scatter(
+        df, x="My Rating", y="Number of Pages",
+        labels={"My Rating": "Rating", "Number of Pages": "Page count"},
+        template="plotly_white",
+    )
+    figure.update_traces(marker={"size": 20, "opacity": 0.4})
+    max_pages = 1000 if limit_pages else max(1, float(df["Number of Pages"].max()) * 1.05)
+    figure.update_xaxes(range=[0.5, 5.5])
+    figure.update_yaxes(range=[0, max_pages])
+    return figure
+
+
 def ensure_enriched(raw: Path, enriched: Path, force: bool = False) -> pd.DataFrame:
-    """Ensure an enriched CSV exists by running the pipeline if necessary.
-
-    Behavior:
-    - If `force` is True, always re-run the pipeline.
-    - If enriched file is missing and raw exists, run the pipeline.
-    - If raw exists and is newer than enriched, re-run the pipeline.
-    - If raw missing but enriched exists, load enriched.
-    - If neither exists, return empty DataFrame.
-    """
-    # If force-run requested, do it unconditionally (if raw exists)
-    if force and raw.exists():
-        df_raw = load_raw_csv(raw)
-        df_clean, report = clean_dataframe(df_raw)
-        df_enriched = compute_enrichment(df_clean)
-        enriched.parent.mkdir(parents=True, exist_ok=True)
-        df_enriched.to_csv(enriched, index=False)
-        return df_enriched
-
-    # If enriched missing but raw exists -> run pipeline
-    if (not enriched.exists()) and raw.exists():
-        df_raw = load_raw_csv(raw)
-        df_clean, report = clean_dataframe(df_raw)
-        if report.get("invalid_pages_rows"):
-            st.warning("Invalid Number of Pages in these rows:\n" + "\n".join(report["invalid_pages_rows"]))
-        df_enriched = compute_enrichment(df_clean)
-        enriched.parent.mkdir(parents=True, exist_ok=True)
-        df_enriched.to_csv(enriched, index=False)
-        return df_enriched
-
-    # If both exist, check timestamps: re-run if raw is newer
-    if enriched.exists() and raw.exists():
-        enriched_mtime = enriched.stat().st_mtime
-        raw_mtime = raw.stat().st_mtime
-        if raw_mtime > enriched_mtime:
-            # raw changed since enriched was produced
-            df_raw = load_raw_csv(raw)
-            df_clean, report = clean_dataframe(df_raw)
-            if report.get("invalid_pages_rows"):
-                st.warning("Invalid Number of Pages in these rows:\n" + "\n".join(report["invalid_pages_rows"]))
-            df_enriched = compute_enrichment(df_clean)
-            df_enriched.to_csv(enriched, index=False)
-            return coerce_datetime_columns(df_enriched)
-        # otherwise load existing enriched
-        df = pd.read_csv(enriched, keep_default_na=True)
-        return coerce_datetime_columns(df)
-
-    # If enriched exists but raw missing -> load enriched
-    if enriched.exists() and (not raw.exists()):
-        df = pd.read_csv(enriched, keep_default_na=True)
-        return coerce_datetime_columns(df)
-
-    # neither exists
+    """Create missing data or explicitly rebuild; never silently overwrite stale data."""
+    if force or not enriched.exists():
+        if not raw.exists():
+            if force:
+                raise FileNotFoundError(f"Missing raw data at {raw}")
+            return pd.DataFrame()
+        return coerce_datetime_columns(build_enriched(raw, enriched))
+    if enriched.exists():
+        return coerce_datetime_columns(pd.read_csv(enriched, keep_default_na=True))
     return pd.DataFrame()
+
+
+def data_is_aligned(raw: Path, enriched: Path) -> bool:
+    """Compare read-shelf IDs, including duplicate counts, with the enriched file."""
+    raw_ids = pd.read_csv(raw, dtype=str, keep_default_na=False, usecols=["Book Id", "Exclusive Shelf"])
+    enriched_ids = pd.read_csv(enriched, dtype=str, keep_default_na=False, usecols=["Book Id"])
+    read_ids = raw_ids.loc[raw_ids["Exclusive Shelf"].str.strip().str.lower().eq("read"), "Book Id"].str.strip()
+    output_ids = enriched_ids["Book Id"].str.strip()
+    return not read_ids.eq("").any() and not output_ids.eq("").any() and Counter(read_ids) == Counter(output_ids)
 
 
 def compute_kpis(df: pd.DataFrame) -> dict:
@@ -267,6 +268,52 @@ def main() -> None:
     st.session_state.setdefault("pending_confirmation", None)
     st.session_state.setdefault("confirmed_action", None)
 
+    genre_process = st.session_state.get("genre_process")
+    if genre_process is not None:
+        if genre_process.poll() is None:
+            path = st.session_state.get("genre_progress_path")
+            if path:
+                try:
+                    if not path.stat().st_size:
+                        st.info("Preparing genre lookup...")
+                    else:
+                        progress = json.loads(path.read_text(encoding="utf-8"))
+                        completed, total, current = progress["completed"], progress["total"], progress["current"]
+                        label = f"Looking up book {current} of {total}" if current else f"Completed {completed} of {total} books"
+                        st.progress(completed / total if total else 0.0, text=label)
+                except (OSError, ValueError, KeyError) as exc:
+                    st.warning(f"Could not read lookup progress: {exc}")
+            else:
+                st.info("Preparing genre lookup...")
+            with st.sidebar:
+                st.status("Genre lookup running", state="running")
+                st.write("Looking up genres for all read books.")
+            st.info("Dashboard is temporarily locked while genre lookup is running.")
+            with st.spinner("Looking up book genres..."):
+                time.sleep(2)
+            st.rerun()
+            return
+        genre_process.wait()
+        output = st.session_state.pop("genre_output")
+        output.seek(0)
+        messages = output.read().strip()
+        output.close()
+        st.session_state.pop("genre_process", None)
+        path = st.session_state.pop("genre_progress_path", None)
+        if path:
+            path.unlink(missing_ok=True)
+        if genre_process.returncode != 0:
+            st.error("Genre lookup failed. Check the enriched file and error details below.")
+            if messages:
+                st.code(messages)
+            return
+        lines = messages.splitlines()
+        if lines:
+            st.success(lines[-1])
+        if len(lines) > 1:
+            st.warning("Some genre lookups reported problems or returned no new subjects.")
+            st.code("\n".join(lines[:-1]))
+
     running_pid = st.session_state.get("goodreads_extractor_pid")
     extractor_status = st.session_state.get("goodreads_extractor_status", "idle")
 
@@ -289,9 +336,10 @@ def main() -> None:
             st.write("Extraction finished; now updating dates and metrics.")
         st.info("Dashboard is temporarily locked while scraped data is merged.")
         with st.spinner("Matching Goodreads dates to the export and recalculating metrics..."):
-            run_pipeline_with_scraped_dates()
+            merged = run_pipeline_with_scraped_dates()
         clear_goodreads_extractor_state()
-        st.rerun()
+        if merged:
+            st.rerun()
         return
 
     # Sidebar controls: pipeline and filters
@@ -305,6 +353,7 @@ def main() -> None:
         key="goodreads_scraper_button",
         disabled=extractor_is_running or extractor_status in {"running", "matching"},
     )
+    request_genres = st.sidebar.button("Look up book genres")
     if request_rebuild:
         st.session_state["pending_confirmation"] = "rebuild"
         st.rerun()
@@ -313,13 +362,20 @@ def main() -> None:
         st.session_state["pending_confirmation"] = "extract"
         st.rerun()
         return
+    if request_genres:
+        st.session_state["pending_confirmation"] = "genres"
+        st.rerun()
+        return
 
     pending_confirmation = st.session_state.get("pending_confirmation")
-    if pending_confirmation in {"extract", "rebuild"}:
+    if pending_confirmation in {"extract", "rebuild", "genres"}:
         # Treat dialog dismissal via the "X" as "No" by clearing pending state
         # before opening the dialog; only an explicit "Yes" sets confirmed_action.
         st.session_state.pop("pending_confirmation", None)
-        _show_confirmation_dialog(pending_confirmation)
+        if pending_confirmation == "genres":
+            _show_genre_dialog()
+        else:
+            _show_confirmation_dialog(pending_confirmation)
         return
 
     confirmed_action = st.session_state.pop("confirmed_action", None)
@@ -330,20 +386,45 @@ def main() -> None:
         launch_goodreads_extractor()
         st.rerun()
         return
+    if confirmed_action in {"genres_all", "genres_missing"}:
+        try:
+            ensure_enriched(RAW_CSV, ENRICHED_CSV)
+            if not ENRICHED_CSV.exists():
+                raise FileNotFoundError(f"Missing enriched data at {ENRICHED_CSV}.")
+            launch_genre_lookup("all" if confirmed_action == "genres_all" else "missing")
+        except (OSError, ValueError, pd.errors.ParserError) as exc:
+            st.error(f"Could not start genre lookup: {exc}")
+            return
+        st.rerun()
+        return
 
     # If the user triggered force_run, rebuild the enriched dataset from the raw CSV.
-    if force_run:
-        with st.spinner("Rebuilding enriched data from raw Goodreads export..."):
-            df = rebuild_enriched_from_raw_data()
-            if df is None:
-                df = ensure_enriched(RAW_CSV, ENRICHED_CSV, force=False)
-            else:
+    try:
+        if force_run:
+            with st.spinner("Rebuilding enriched data from raw Goodreads export..."):
+                df = ensure_enriched(RAW_CSV, ENRICHED_CSV, force=True)
                 st.success("Raw-data rebuild finished.")
-    else:
-        df = ensure_enriched(RAW_CSV, ENRICHED_CSV, force=False)
+        else:
+            df = ensure_enriched(RAW_CSV, ENRICHED_CSV)
+        if RAW_CSV.exists() and ENRICHED_CSV.exists():
+            if not data_is_aligned(RAW_CSV, ENRICHED_CSV):
+                st.warning("Raw and enriched data are not aligned. Consider re-running from raw data.")
+        elif not RAW_CSV.exists():
+            st.warning(f"Cannot check data alignment: missing raw data at {RAW_CSV}.")
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        st.error(f"Could not load or rebuild reading data: {exc}")
+        return
 
     if df.empty:
-        st.warning(f"No data available. Place your raw export at {RAW_CSV} and re-run the pipeline.")
+        if ENRICHED_CSV.exists():
+            st.info("No books on the read shelf are available.")
+        else:
+            st.warning(f"No data available. Place your raw export at {RAW_CSV} and re-run the pipeline.")
+        return
+
+    df = df.loc[df["Exclusive Shelf"].fillna("").str.strip().str.lower().eq("read")].copy()
+    if df.empty:
+        st.info("No books on the read shelf are available.")
         return
 
     # --- M4: Interactive Month-Range Filters ---
@@ -441,7 +522,7 @@ def main() -> None:
             pages_start = df_range["Date Started"].min() if "Date Started" in df_range.columns else df_range["Date Read"].min()
             pages_end = df_range["Date Finished"].max() if "Date Finished" in df_range.columns else df_range["Date Read"].max()
 
-        series_pages = pages_over_time(df_range, start=pages_start, end=pages_end)
+        series_pages = pages_over_time(df, start=pages_start, end=pages_end)
         if series_pages.empty:
             st.info("No pages data available for the selected range.")
         else:
@@ -460,20 +541,8 @@ def main() -> None:
         if scatter_df.empty:
             st.info("No page/rating pairs available for the selected range.")
         else:
-            fig3 = px.scatter(
-                scatter_df,
-                x="My Rating",
-                y="Number of Pages",
-                labels={"My Rating": "Rating", "Number of Pages": "Page count"},
-                template="plotly_white",
-            )
-            fig3.update_traces(marker={"size": 20, "opacity": 0.2})
-            if limit_pages_1000:
-                fig3.update_yaxes(range=[0, 1000])
-            fig3.update_xaxes(range=[0.5, 5.5], scaleanchor="y", scaleratio=1, constrain="domain")
-            fig3.update_yaxes(scaleanchor="x", scaleratio=1, constrain="domain")
-            fig3.update_layout(width=700, height=700, margin=dict(l=50, r=30, t=30, b=50))
-            st.plotly_chart(fig3, use_container_width=False)
+            fig3 = pages_rating_figure(scatter_df, limit_pages_1000)
+            st.plotly_chart(fig3, use_container_width=True)
 
 
 if __name__ == "__main__":

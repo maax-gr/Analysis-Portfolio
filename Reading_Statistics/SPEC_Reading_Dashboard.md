@@ -125,8 +125,10 @@ Rules:
 - Remove other shelf states such as `to-read` or `currently-reading`.
 - The enriched CSV always contains the columns `Date Started` and `Date Finished`, even before any scraper match has been applied.
 - Populate those columns as follows:
-  * `Date Started` = scraped value when available; otherwise fallback to `Date Added`.
+  * `Date Started` = scraped value when available; otherwise fallback to `Date Added`, capped at `Date Finished` when the book was added after it was finished.
   * `Date Finished` = scraped value when available; otherwise fallback to `Date Read`.
+- Preserve an explicit `Date Read` even when it precedes `Date Added`. If it is
+  missing, use `Date Added` as the fallback for book-based statistics.
 - This ensures the dashboard and KPI logic can rely on the date columns existing on every rebuild, even before the extractor runs.
 - The final enrichment stage merges the extracted dates into the cleaned data and writes the result to the enriched CSV.
 
@@ -135,6 +137,9 @@ The dashboard must read from the enriched CSV for its metrics and visualizations
 
 Requirements:
 - Launching the dashboard should show the metrics already available from the current enriched data.
+- If the enriched file is missing, create it from raw data without online lookups.
+- Compare read-shelf Book IDs in raw data with the IDs in enriched data and
+  warn if they differ. Do not silently overwrite an existing stale file.
 - A sidebar button named `Extract reading dates from Goodreads` opens a confirmation popup (`Are you sure?`) with `Yes` and `No`.
 - Pressing `Yes` starts the scraper in the background.
 - Pressing `No` aborts and returns to the current dashboard state.
@@ -142,12 +147,20 @@ Requirements:
 - The button is disabled while the scraper is already running.
 - After extraction completes, the dashboard reruns the pipeline and refreshes the view to reflect the newly merged dates.
 - This refresh uses the cache file `data/read_dates_cache.csv` and merges it into the raw read-data output.
+- Re-running from raw recalculates statistics without running the Goodreads
+  scraper or online genre lookups. Preserve existing dates and genre metadata
+  where possible, and reuse exact matches in the read-dates cache.
+- A genre lookup button below the reading-date button confirms and runs a
+  background lookup for all read books or only books with empty `genre_raw`,
+  or cancels. Display the current book number and total while the dashboard is locked.
 
 ### 4.6 Additional stats to calculate
 - Days until finished: number of days between `Date Started` and `Date Finished`
 - Average pages read per day: `Number of Pages` / `Days until finished`
-- If `Number of Pages` is missing or `Days until finished` is zero, leave the value null.
+- If `Number of Pages` is missing or `Days until finished` is not positive, leave the value null.
 - Calculate per-day page totals across the relevant range using the derived reading window for each book.
+- Filter book-based statistics by `Date Read`; pages over time are allocated to
+  calendar days in the reading interval, including intervals crossing years.
 
 ### 4.7 Security & etiquette notes
 - Treat the extractor as a personal automation tool.
@@ -157,27 +170,39 @@ Requirements:
 
 {{ 
 Additional columns (Column | Type | Description ):
-* genre_raw | list[str] | Raw categories/subjects from the API 
+* genre_raw | JSON list[str] | Original categories/subjects from the API
 * genre | str | Mapped to one of my broad genres (see 5.3); null/NA if no reliable match
-* lookup_status | str | `matched` / `not_found` }}
+* lookup_status | str | `matched` / `not_found` / `error`
+* genre_source | str | Source of newly matched subjects, if known }}
 
 
 ## 5. Genre Enrichment
 
 ### 5.1 Sources & order of attempts
-1. Google Books by ISBN-13 (preferred when available and valid)
-2. Google Books by ISBN-10 normalized to ISBN-13 if needed
-3. If ISBN lookup fails or appears mismatched, fallback to Google Books search by normalized title + author
-4. Open Library as a secondary source when Google Books is unavailable or incomplete; on Open Library, treat "Subjects" / "Themen" as the raw genre list to collect
-5. No manual override file for now; if no genre is found, leave `genre` as null/NA and `lookup_status` as `not_found`
+1. Open Library by valid ISBN-13 (or ISBN-10 normalized to ISBN-13), then title + author; treat its subjects as raw genres.
+2. Fall back to Google Books by ISBN, then title + author, if Open Library finds no subjects.
+3. No manual override file for now; if no genre is found, leave `genre` as null/NA and `lookup_status` as `not_found`.
 
 ### 5.2 Behaviour
-- Cache every response by canonical lookup key so each book is looked up once.
+- Missing mode checks whether `genre_raw` has subjects, independently of status.
+  All-book mode refreshes every read book. Within a run, cache results by lookup key.
+- Search by the title without a colon-delimited subtitle or trailing parenthesized
+  or bracketed details. Allow a leading "The" to differ, while requiring an
+  exact normalized author match; prefer exact full-title matches.
 - Collect all raw subjects/genres returned by the API/source, not just the first match; we will refine the mapping rule later.
-- Use a small, explicit sleep / rate limit between requests to avoid hitting API limits.
-- Failures should be non-fatal: unmatched books remain valid and are simply left with `genre = null` and `lookup_status = not_found`.
+- Wait at least 1.1 seconds before each request attempt, including retries,
+  to stay below Open Library's default one-request-per-second limit.
+- Retry transient request failures once and stop after three consecutive books
+  for which Open Library fails without a successful response.
+- Map each new result immediately and atomically checkpoint each processed book.
+  Stop without overwriting if the enriched CSV changes concurrently.
+- No match leaves `genre = null` and `lookup_status = not_found`. Report request
+  errors separately as `lookup_status = error`, retaining previous genre data.
+- After a Google Books HTTP 429, skip Google for the rest of the run. Books
+  without an Open Library match remain errors and are retried on a later run.
+- Record the source for new matches. Older cached matches may have an unknown source.
 - `None` should never be treated as `Other`; `Other` is only used when a non-empty subject list exists but no category matches.
-- Re-running should skip already-cached books unless `--refresh` is passed.
+- Missing mode skips books with saved subjects; all-book mode rechecks them.
 - API keys: read from environment variables / `.env` (never committed). Initial implementation may use a public Google Books request without a key when allowed; if a key is needed later, it must be configured via env.
 - The lookup should use the same normalization helpers as the rest of the project to avoid ISBN/title-author mismatches due to punctuation or formatting.
 
@@ -187,9 +212,10 @@ Additional columns (Column | Type | Description ):
 
 | My genre | Raw terms that map to it (case-insensitive contains) |
 |---|---|
-| Crime / Mystery | detective, mystery, thriller, crime, noir, police, spy |
-| Science Fiction | science fiction, sci fi, sci-fi, speculative fiction, space opera, space |
+| Historical Fiction | historical fiction, fiction historical, historical novel |
 | Fantasy | fantasy, epic fantasy, urban fantasy, magic, wizard, dragons, elf, hobbit, mythology, mythic, quest, fairy tale, sorcery |
+| Crime / Mystery | detective, mystery, thriller, crime, noir, police, spy |
+| Science Fiction | science fiction, sci fi, sci-fi, speculative fiction, space opera |
 | Literary Fiction | literary fiction, contemporary fiction, classic literature, literature |
 | Non-fiction: History | history, historical, military history, world history |
 | Non-fiction: Science | science, nature, astronomy, biology, physics, technology, medicine |
@@ -197,7 +223,7 @@ Additional columns (Column | Type | Description ):
 | Biography / Memoir | biography, memoir, autobiography, personal narrative, travel, travelogue, hiking, outdoor, adventure, essay, essays |
 | Other | fallback when a non-empty subject list exists but no rule matches |
 
-**Conflict rule when several match:** first match in the table order wins. This is intentional and makes the mapping deterministic. If no category matches and there is at least one raw subject, use `Other`; if there are no raw subjects, leave `genre` as null. 
+**Conflict rule when several match:** first match in the table order wins. Matches use whole words or phrases, not fragments inside words. If no category matches and there is at least one raw subject, use `Other`; if there are no raw subjects, leave `genre` as null. Existing matched subjects are remapped without online requests.
 
 
 ## 6. Dashboard Requirements
@@ -275,12 +301,13 @@ M5 | Implement `read_dates` extraction (Playwright)
 
   Implementation details for M5:
   - CLI entrypoints:
-    * `--use-read-dates` (deprecated in the current codebase) — when present the extractor runs before enrichment.
+    * `--use-read-dates` — fuzzy-match the existing cache without running the extractor.
+    * `--refresh-read-dates` — explicitly run the extractor before enrichment.
     * `--limit N` — stop after collecting N books.
     * no `--headless` flag — the scraper runs in a visible browser window for login and automation.
     * `--debug` / `--verbose` — print visited URLs, matched lines, and parsing decisions for troubleshooting.
   - Output format:
-    * Cache CSV: `data/read_dates_cache.csv` with columns `book_key,read_dates` where `read_dates` is `START,END[;START,END]*`.
+    * Cache CSV: `data/read_dates_cache.csv` with columns `title,author,key,date_started,date_finished`.
     * Extractor must be resilient to missing per-row `review/show` links; prefer visiting `review/show/<id>` when present.
   - Parsing policy:
     * Pair `Started` → `Finished` events in order of appearance; if a `Finished` appears without a preceding `Started`, skip that pair.
@@ -292,8 +319,8 @@ M6 | Integrate extractor into pipeline and enrichment
   - Update `src/enrichment.py` to prefer `read_dates` when present and apply the SPEC fallbacks when `read_dates` are missing.
 
 M7 | CLI flags, caching and Streamlit toggle
-  - Add a `--use-read-dates` flag to `run_pipeline.py` and a Streamlit sidebar toggle to enable/skip extraction at runtime.
-  - Implement simple caching for extracted results (CSV cache in `data/`) and a `--refresh` option to re-run extraction.
+  - Use `--use-read-dates` to match the existing cache and the Streamlit extraction button to run the scraper.
+  - Use the CSV cache in `data/` and `--refresh-read-dates` to re-run extraction explicitly.
 
 {{
 M8 | Tests, validation and sample data

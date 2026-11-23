@@ -71,7 +71,7 @@ def clean_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, List[str]
     - Parse `Date Added` and `Date Read` with format YYYY/MM/DD (coerce errors)
     - If `Date Read` is missing but `Date Added` exists, copy `Date Added`
     - If both dates missing => left as NaT
-    - If `Date Read` < `Date Added`, set `Date Read` == `Date Added`
+    - Preserve an explicit `Date Read` even if it precedes `Date Added`
 
     Returns a tuple `(cleaned_df, report)` where `report` contains lists of
     problematic fields (currently `invalid_pages_rows`).
@@ -127,19 +127,14 @@ def clean_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, List[str]
     df["Original Publication Year"] = pd.to_numeric(df["Original Publication Year"], errors="coerce").astype("Int64")
 
     # Parse dates (spec expects yyyy/mm/dd but we tolerate coercion)
-    df["Date Added"] = pd.to_datetime(df["Date Added"], errors="coerce", infer_datetime_format=True)
-    df["Date Read"] = pd.to_datetime(df["Date Read"], errors="coerce", infer_datetime_format=True)
+    df["Date Added"] = pd.to_datetime(df["Date Added"], errors="coerce")
+    df["Date Read"] = pd.to_datetime(df["Date Read"], errors="coerce")
 
     # If Date Read missing but Date Added exists -> copy
     missing_read = df["Date Read"].isna() & df["Date Added"].notna()
     df.loc[missing_read, "Date Read"] = df.loc[missing_read, "Date Added"]
 
     # If both missing -> leave as NaT (will be ignored by algorithms)
-
-    # If Date Read < Date Added -> set Date Read == Date Added
-    mask_bad_order = df["Date Read"].notna() & df["Date Added"].notna() & (df["Date Read"] < df["Date Added"])
-    if mask_bad_order.any():
-        df.loc[mask_bad_order, "Date Read"] = df.loc[mask_bad_order, "Date Added"]
 
     # Standardize Exclusive Shelf capitalization
     df["Exclusive Shelf"] = df["Exclusive Shelf"].astype(str).str.strip().str.lower().replace({"nan": pd.NA})
